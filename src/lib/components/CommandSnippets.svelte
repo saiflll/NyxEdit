@@ -11,7 +11,7 @@
     created: string;
   };
 
-  const SNIPPETS_FILE = "C:\\Users\\Lenovo\\AppData\\Local\\Temp\\contlib\\snippets.json";
+  const SNIPPETS_FILE = "C:\\Users\\Lenovo\\AppData\\Local\\Temp\\codlib\\snippets.json";
 
   let snippets = $state<Snippet[]>([]);
   let editingId = $state<string | null>(null);
@@ -67,11 +67,11 @@
     try {
       let cmd = snippet.command;
       if (snippet.language === "python") {
-        const f = `C:\\Users\\Lenovo\\AppData\\Local\\Temp\\contlib\\snip_${snippet.id}.py`;
+        const f = `C:\\Users\\Lenovo\\AppData\\Local\\Temp\\codlib\\snip_${snippet.id}.py`;
         await invoke("fs_write_file", { path: f, content: cmd });
         cmd = `python "${f}"`;
       } else if (snippet.language === "node") {
-        const f = `C:\\Users\\Lenovo\\AppData\\Local\\Temp\\contlib\\snip_${snippet.id}.js`;
+        const f = `C:\\Users\\Lenovo\\AppData\\Local\\Temp\\codlib\\snip_${snippet.id}.js`;
         await invoke("fs_write_file", { path: f, content: cmd });
         cmd = `node "${f}"`;
       }

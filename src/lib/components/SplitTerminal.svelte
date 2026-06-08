@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import Terminal from "./Terminal.svelte";
   import { activeTerminalSessionId } from "../stores.svelte";
 
   let {
+    cwd = "",
     onCwdChange = (_cwd: string) => {},
   } = $props();
+
+  let prevCwd = $state(cwd);
 
   let terminalIds = $state(["term-1"]);
   let sessions = $state<Record<string, string>>({});
@@ -26,6 +30,19 @@
 
   $effect(() => {
     cols = Math.ceil(Math.sqrt(terminalIds.length));
+  });
+
+  // Sync workspace → terminal: when cwd prop changes externally, send cd
+  $effect(() => {
+    if (cwd && cwd !== prevCwd && terminalIds.length > 0) {
+      const primaryId = primaryTerminalId();
+      if (primaryId && sessions[primaryId]) {
+        invoke("pty_write", { sessionId: sessions[primaryId], data: `cd "${cwd}"\n` }).catch(() => {});
+        cwds[primaryId] = cwd;
+        cwds = { ...cwds };
+      }
+      prevCwd = cwd;
+    }
   });
 
   function primaryTerminalId(): string | null {
@@ -119,9 +136,9 @@
   .tiling-grid { flex:1; display:grid; gap:2px; padding:2px; overflow:hidden; grid-auto-rows:1fr; }
 
   .tiling-cell { display:flex; flex-direction:column; border:1px solid var(--border-subtle); border-radius:6px; overflow:hidden; min-height:60px; background:var(--bg-primary); transition: border-color 0.15s ease; }
-  .tiling-cell.cell-active { border-color: var(--text-primary); }
+  .tiling-cell.cell-active { border-color: var(--accent-blue); }
   .tiling-cell-header { display:flex; align-items:center; justify-content:space-between; padding:1px 8px; background:var(--bg-secondary); border-bottom:1px solid var(--border-subtle); font-size:var(--fs-10); color:var(--text-muted); user-select:none; flex-shrink:0; }
-  .tiling-cell-header.header-active { background: color-mix(in srgb, var(--text-primary) 5%, var(--bg-secondary)); }
+  .tiling-cell-header.header-active { background: color-mix(in srgb, var(--accent-blue) 5%, var(--bg-secondary)); }
   .tiling-cell-label { font-family:monospace; display:inline-flex; align-items:center; }
   .tiling-cell-label.active { color: var(--text-primary); font-weight: 600; }
   .tiling-cell-label.active::before {
@@ -129,16 +146,9 @@
     display: inline-block;
     width: 6px;
     height: 6px;
-    background: var(--text-primary);
+    background: var(--accent-blue);
     border-radius: 50%;
     margin-right: 6px;
-    box-shadow: 0 0 8px var(--text-primary), 0 0 2px var(--text-primary);
-    animation: active-pulse 2s infinite ease-in-out;
-  }
-  @keyframes active-pulse {
-    0% { transform: scale(1); opacity: 0.8; }
-    50% { transform: scale(1.2); opacity: 1; box-shadow: 0 0 10px var(--text-primary), 0 0 4px var(--text-primary); }
-    100% { transform: scale(1); opacity: 0.8; }
   }
   .tiling-cell-actions { display:flex; gap:1px; }
   .tiling-cell-btn { display:flex; align-items:center; justify-content:center; background:none; border:none; color:var(--text-muted); padding:1px 3px; cursor:pointer; border-radius:3px; }

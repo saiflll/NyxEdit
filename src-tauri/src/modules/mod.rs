@@ -1,4 +1,9 @@
 pub mod ai;
 pub mod fs;
 pub mod pio;
+pub mod proxy;
 pub mod pty;
+pub mod secrets;
+pub mod sessions;
+#[cfg(target_os = "windows")]
+pub mod job;

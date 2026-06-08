@@ -1,14 +1,88 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import type { FileEntry } from "../stores.svelte";
+  import { currentDir, type FileEntry } from "../stores.svelte";
+  import { open, ask } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
 
   let {
     onFileOpen = (_path: string) => {},
     onDirChange = (_path: string) => {},
+    onFileContext = (_path: string, _x: number, _y: number) => {},
     revealPath = "",
   } = $props();
 
-  let currentPath = $state("C:\\Users\\Lenovo\\Documents\\dev\\contlib");
+  let currentPath = $state("");
+  let pathInputError = $state(false);
+
+  $effect(() => {
+    const unsub = currentDir.subscribe((val) => {
+      if (val !== currentPath) {
+        currentPath = val;
+      }
+    });
+    return unsub;
+  });
+
+  async function pickFolder() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: currentPath,
+      });
+      if (selected && typeof selected === "string") {
+        currentPath = selected;
+        onDirChange(currentPath);
+        await loadRoot();
+      }
+    } catch (e) {
+      console.error("Folder picker error:", e);
+    }
+  }
+
+  async function goUp() {
+    const idx = currentPath.lastIndexOf("\\");
+    if (idx > 0) {
+      let parent = currentPath.slice(0, idx);
+      if (parent.endsWith(":")) {
+        parent += "\\";
+      }
+      currentPath = parent;
+      onDirChange(currentPath);
+      await loadRoot();
+    } else {
+      // Handles linux style / paths
+      const lastSlash = currentPath.lastIndexOf("/");
+      if (lastSlash > 0) {
+        let parent = currentPath.slice(0, lastSlash);
+        if (parent === "") parent = "/";
+        currentPath = parent;
+        onDirChange(currentPath);
+        await loadRoot();
+      }
+    }
+  }
+
+  async function handlePathSubmit() {
+    const target = currentPath.trim();
+    if (!target) return;
+    try {
+      const exists = await invoke<boolean>("fs_exists", { path: target });
+      if (exists) {
+        pathInputError = false;
+        currentPath = target;
+        onDirChange(currentPath);
+        await loadRoot();
+      } else {
+        pathInputError = true;
+        setTimeout(() => { pathInputError = false; }, 1000);
+      }
+    } catch (e) {
+      pathInputError = true;
+      setTimeout(() => { pathInputError = false; }, 1000);
+    }
+  }
+
   let rootEntries = $state<FileEntry[]>([]);
   let expandedDirs = $state<Set<string>>(new Set());
   let childCache = $state<Map<string, FileEntry[]>>(new Map());
@@ -201,7 +275,11 @@
     if (!selectedPath) return;
     const entry = flatList.find(x => x.entry.path === selectedPath);
     const label = entry ? entry.entry.name : selectedPath.split("\\").pop();
-    if (!confirm(`Delete "${label}"?`)) return;
+    const confirmed = await ask(`Are you sure you want to delete "${label}"?`, {
+      title: "Delete Item",
+      kind: "warning",
+    });
+    if (!confirmed) return;
     try {
       await invoke("fs_delete", { path: selectedPath });
       selectedPath = null;
@@ -275,6 +353,7 @@
     sh: "#4ade80", bash: "#4ade80", ps1: "#38bdf8",
     png: "#fbbf24", jpg: "#fbbf24", jpeg: "#fbbf24",
     svg: "#fbbf24", gif: "#fbbf24",
+    c: "#3b82f6", cpp: "#3b82f6", cxx: "#3b82f6", h: "#8b5cf6", hpp: "#8b5cf6", ino: "#00979d",
   };
 
   function fileColor(name: string): string {
@@ -360,21 +439,62 @@
     return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="${c}" stroke-width="1.5" fill="${c}" fill-opacity="0.05"/><path d="M9 12l3 2 3-2" stroke="${c}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
   }
 
-  $effect(() => { loadRoot(); });
+  let initialLoaded = $state(false);
+  onMount(() => {
+    initialLoaded = true;
+    if (currentPath) loadRoot();
+  });
+
+  $effect(() => {
+    if (initialLoaded && currentPath) {
+      loadRoot();
+    }
+  });
 
   let lastRevealed = $state("");
   $effect(() => {
     if (!revealPath || revealPath === lastRevealed) return;
-    if (!revealPath.startsWith(currentPath)) return;
+
+    if (!currentPath || !revealPath.startsWith(currentPath)) {
+      invoke<boolean>("fs_exists", { path: revealPath }).then((exists) => {
+        if (exists) {
+          invoke<any>("fs_stat", { path: revealPath }).then((info) => {
+            let dirToLoad = revealPath;
+            if (!info.is_dir) {
+              const lastSlash = revealPath.lastIndexOf("\\");
+              const lastSlashUnix = revealPath.lastIndexOf("/");
+              const lastSlashIndex = Math.max(lastSlash, lastSlashUnix);
+              if (lastSlashIndex > 0) {
+                dirToLoad = revealPath.slice(0, lastSlashIndex);
+                if (dirToLoad.endsWith(":")) dirToLoad += "\\";
+              }
+            }
+            currentPath = dirToLoad;
+            onDirChange(currentPath);
+            loadRoot().then(() => {
+              expandToPath(revealPath);
+            });
+          }).catch(() => {});
+        }
+      }).catch(() => {});
+      lastRevealed = revealPath;
+      return;
+    }
+
+    expandToPath(revealPath);
     lastRevealed = revealPath;
-    const rel = revealPath.slice(currentPath.length).replace(/^\\+/, "");
+  });
+
+  function expandToPath(target: string) {
+    const rel = target.slice(currentPath.length).replace(/^\\+/, "").replace(/^\/+/, "");
     if (!rel) return;
-    const parts = rel.split("\\");
+    const parts = rel.includes("\\") ? rel.split("\\") : rel.split("/");
     const s = new Set(expandedDirs);
     let acc = currentPath;
     for (const p of parts) {
       if (!p) continue;
-      acc = acc + "\\" + p;
+      const sep = acc.endsWith("\\") || acc.endsWith("/") ? "" : (acc.includes("/") ? "/" : "\\");
+      acc = acc + sep + p;
       s.add(acc);
       if (!childCache.has(acc)) {
         loadDir(acc).then((children) => {
@@ -384,45 +504,56 @@
       }
     }
     expandedDirs = s;
-  });
+  }
+
 </script>
 
 <div class="fm" onkeydown={handleFmKeydown} tabindex="-1">
   <div class="fm-header">
     <span class="fm-title">EXPLORER</span>
-    <div class="fm-header-actions">
-      <span class="fm-root">{currentPath.split("\\").pop()}</span>
-      <button class="fm-btn" onclick={() => { showNewFolder = !showNewFolder; showNewFile = false; }} title="New Folder">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      </button>
-      <button class="fm-btn" onclick={() => { showNewFile = !showNewFile; showNewFolder = false; }} title="New File">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
-      </button>
-      <button class="fm-btn" onclick={() => { childCache.clear(); loadRoot(); }} title="Refresh">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-      </button>
-    </div>
+    {#if currentPath}
+      <div class="fm-header-actions">
+        <span class="fm-root">{currentPath.includes("\\") ? currentPath.split("\\").pop() : currentPath.split("/").pop()}</span>
+        <button class="fm-btn" onclick={() => { showNewFolder = !showNewFolder; showNewFile = false; }} title="New Folder">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </button>
+        <button class="fm-btn" onclick={() => { showNewFile = !showNewFile; showNewFolder = false; }} title="New File">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="9" y1="12" x2="15" y2="12"/></svg>
+        </button>
+        <button class="fm-btn" onclick={() => { childCache.clear(); loadRoot(); }} title="Refresh">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+      </div>
+    {/if}
   </div>
-  {#if showNewFolder}
-    <div class="fm-new-row">
-      <input class="fm-new-input" bind:value={newFolderName} placeholder="folder name..." autofocus
-        onkeydown={(e) => { if (e.key === "Enter") createFolder(); if (e.key === "Escape") { showNewFolder = false; newFolderName = ""; }}}
-        onblur={() => { if (!newFolderName.trim()) { showNewFolder = false; }}}
-      />
-      <button class="fm-new-btn" onclick={createFolder}>+</button>
-    </div>
-  {/if}
-  {#if showNewFile}
-    <div class="fm-new-row">
-      <input class="fm-new-input" bind:value={newFileName} placeholder="file.txt..." autofocus
-        onkeydown={(e) => { if (e.key === "Enter") createFile(); if (e.key === "Escape") { showNewFile = false; newFileName = ""; }}}
-        onblur={() => { if (!newFileName.trim()) { showNewFile = false; }}}
-      />
-      <button class="fm-new-btn" onclick={createFile}>+</button>
-    </div>
-  {/if}
 
-  <div class="fm-body">
+  {#if !currentPath}
+    <div class="fm-no-workspace">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:12px; color:var(--text-muted);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <p class="fm-no-workspace-text">No folder opened in workspace</p>
+      <button class="fm-open-btn" onclick={pickFolder}>Open Folder</button>
+    </div>
+  {:else}
+    {#if showNewFolder}
+      <div class="fm-new-row">
+        <input class="fm-new-input" bind:value={newFolderName} placeholder="folder name..." autofocus
+          onkeydown={(e) => { if (e.key === "Enter") createFolder(); if (e.key === "Escape") { showNewFolder = false; newFolderName = ""; }}}
+          onblur={() => { if (!newFolderName.trim()) { showNewFolder = false; }}}
+        />
+        <button class="fm-new-btn" onclick={createFolder}>+</button>
+      </div>
+    {/if}
+    {#if showNewFile}
+      <div class="fm-new-row">
+        <input class="fm-new-input" bind:value={newFileName} placeholder="file.txt..." autofocus
+          onkeydown={(e) => { if (e.key === "Enter") createFile(); if (e.key === "Escape") { showNewFile = false; newFileName = ""; }}}
+          onblur={() => { if (!newFileName.trim()) { showNewFile = false; }}}
+        />
+        <button class="fm-new-btn" onclick={createFile}>+</button>
+      </div>
+    {/if}
+
+    <div class="fm-body">
     {#if isLoading}
       <div class="fm-loader"><div class="spinner"></div></div>
     {:else if rootEntries.length === 0}
@@ -440,6 +571,7 @@
           role="treeitem"
           aria-expanded={item.entry.is_dir ? expanded : undefined}
           onclick={() => openEntry(item.entry, item.depth)}
+          oncontextmenu={(e) => { e.preventDefault(); onFileContext(item.entry.path, e.clientX, e.clientY); }}
         >
           {#each item.guides as hasGuide, di}
             <span class="guide" style="opacity:{hasGuide ? 1 : 0.25}">
@@ -476,6 +608,7 @@
       {/each}
     {/if}
   </div>
+  {/if}
 </div>
 
 <style>
@@ -486,6 +619,11 @@
   .fm-root { font-size:var(--fs-10); color:var(--text-muted); }
   .fm-btn { background:none; border:none; color:var(--text-muted); padding:2px; cursor:pointer; border-radius:3px; display:flex; }
   .fm-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
+
+  .fm-no-workspace { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 24px; text-align: center; }
+  .fm-no-workspace-text { font-size: var(--fs-11); color: var(--text-muted); margin-bottom: 16px; }
+  .fm-open-btn { background: var(--accent-blue); color: var(--bg-primary); border: none; border-radius: 6px; padding: 8px 16px; font-size: var(--fs-11); font-weight: 600; cursor: pointer; transition: filter 0.15s ease; }
+  .fm-open-btn:hover { filter: brightness(1.15); }
 
   .fm-new-row { display:flex; align-items:center; gap:4px; padding:4px 10px; border-bottom:1px solid var(--border-subtle); }
   .fm-new-input { flex:1; background:var(--bg-surface); border:1px solid var(--accent-blue); border-radius:4px; padding:3px 6px; font-size:var(--fs-11); color:var(--text-primary); font-family:monospace; min-width:0; }

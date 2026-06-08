@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { ask } from "@tauri-apps/plugin-dialog";
   import { currentDir } from "../stores.svelte";
 
   let workspacePath = $state("");
@@ -10,16 +11,24 @@
   let commitMessage = $state("");
   let isLoading = $state(false);
   let commitStatus = $state<string | null>(null);
+  let gitRefreshTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 
-  // Subscribe to workspace path changes
+  const MAX_DISPLAY_FILES = 100;
+
+  let displayUntracked = $derived(untracked.slice(0, MAX_DISPLAY_FILES));
+  let displayModified = $derived(modified.slice(0, MAX_DISPLAY_FILES));
+  let displayStaged = $derived(staged.slice(0, MAX_DISPLAY_FILES));
+
+  // Subscribe to workspace path changes with debounce
   $effect(() => {
     const unsub = currentDir.subscribe((val) => {
       workspacePath = val;
       if (val) {
-        refreshStatus();
+        if (gitRefreshTimer) clearTimeout(gitRefreshTimer);
+        gitRefreshTimer = setTimeout(() => refreshStatus(), 300);
       }
     });
-    return unsub;
+    return () => { if (gitRefreshTimer) clearTimeout(gitRefreshTimer); unsub(); };
   });
 
   async function refreshStatus() {
@@ -93,7 +102,11 @@
 
   async function discardFile(file: string) {
     if (!workspacePath) return;
-    if (!confirm(`Are you sure you want to discard changes for "${file}"? This action cannot be undone.`)) return;
+    const confirmed = await ask(`Are you sure you want to discard changes for "${file}"? This action cannot be undone.`, {
+      title: "Discard Changes",
+      kind: "warning",
+    });
+    if (!confirmed) return;
     isLoading = true;
     try {
       await invoke("git_discard_file", { repoPath: workspacePath, filePath: file });
@@ -196,7 +209,7 @@
               <button class="bulk-action-btn" onclick={unstageAll} disabled={isLoading} title="Unstage All">Unstage All</button>
             </div>
             <div class="changes-list">
-              {#each staged as file}
+              {#each displayStaged as file}
                 <div class="change-item change-staged">
                   <span class="change-badge badge-staged">A</span>
                   <span class="change-path" title={file}>{file.split('/').pop()}</span>
@@ -220,7 +233,7 @@
               <button class="bulk-action-btn" onclick={stageAll} disabled={isLoading} title="Stage All">Stage All</button>
             </div>
             <div class="changes-list">
-              {#each modified as file}
+              {#each displayModified as file}
                 <div class="change-item change-modified">
                   <span class="change-badge badge-modified">M</span>
                   <span class="change-path" title={file}>{file.split('/').pop()}</span>
@@ -247,7 +260,7 @@
               <button class="bulk-action-btn" onclick={stageAll} disabled={isLoading} title="Stage All">Stage All</button>
             </div>
             <div class="changes-list">
-              {#each untracked as file}
+              {#each displayUntracked as file}
                 <div class="change-item change-untracked">
                   <span class="change-badge badge-untracked">U</span>
                   <span class="change-path" title={file}>{file.split('/').pop()}</span>

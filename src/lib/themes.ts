@@ -6,6 +6,13 @@ export interface Theme {
 }
 
 export const THEMES: Record<string, Theme> = {
+  "nyx-crimson": { name: "Nyx Crimson", vars: {
+    "--bg-primary": "#050508", "--bg-secondary": "#0c0c12", "--bg-surface": "#12121c",
+    "--bg-elevated": "#181826", "--bg-hover": "#222235",
+    "--border-primary": "#2a2a3d", "--border-subtle": "#161622",
+    "--text-primary": "#ffffff", "--text-secondary": "#e2e4f0", "--text-muted": "#8f92a3",
+    "--accent-blue": "#ff3366", "--accent-green": "#40d080", "--accent-red": "#ff4060", "--accent-yellow": "#ffb86c",
+  }},
   "dark-indigo": { name: "Dark Indigo", vars: {
     "--bg-primary": "#0d0d1a", "--bg-secondary": "#13132b", "--bg-surface": "#1a1b3e",
     "--bg-elevated": "#222350", "--bg-hover": "#2a2b5e",
@@ -113,41 +120,53 @@ export const FONTS = [
 
 export function getStoredTheme(): string {
   try {
-    return localStorage.getItem("contlib-theme") || "dark-indigo";
+    return localStorage.getItem("nyxedit-theme") || "nyx-crimson";
   } catch {
-    return "dark-indigo";
+    return "nyx-crimson";
   }
 }
 
 export function getStoredFont(): string {
   try {
-    return localStorage.getItem("contlib-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
+    return localStorage.getItem("nyxedit-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
   } catch {
     return "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
   }
 }
 
 export function applyTheme(themeId: string) {
-  const theme = THEMES[themeId] || THEMES["dark-indigo"];
+  const theme = THEMES[themeId] || THEMES["nyx-crimson"];
   const root = document.documentElement;
+  
+  // Clear any theme-specific overrides from the inline style first,
+  // so they fallback to the :root stylesheet defaults
+  root.removeAttribute("style");
+  
   for (const [key, val] of Object.entries(theme.vars)) {
     root.style.setProperty(key, val);
   }
+  
+  // Re-apply current font and font size from store/localstorage
+  const fontValue = getStoredFont();
+  root.style.setProperty("font-family", fontValue);
+  const size = getStoredFontSize();
+  root.style.setProperty("--font-size", `${size}px`);
+
   try {
-    localStorage.setItem("contlib-theme", themeId);
+    localStorage.setItem("nyxedit-theme", themeId);
   } catch {}
 }
 
 export function applyFont(fontValue: string) {
   document.documentElement.style.setProperty("font-family", fontValue);
   try {
-    localStorage.setItem("contlib-font", fontValue);
+    localStorage.setItem("nyxedit-font", fontValue);
   } catch {}
 }
 
 export function getStoredFontSize(): number {
   try {
-    return parseInt(localStorage.getItem("contlib-font-size") || "12", 10);
+    return parseInt(localStorage.getItem("nyxedit-font-size") || "12", 10);
   } catch {
     return 12;
   }
@@ -157,6 +176,6 @@ export function applyFontSize(size: number) {
   const clamped = Math.max(9, Math.min(24, size));
   document.documentElement.style.setProperty("--font-size", `${clamped}px`);
   try {
-    localStorage.setItem("contlib-font-size", String(clamped));
+    localStorage.setItem("nyxedit-font-size", String(clamped));
   } catch {}
 }

@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, LazyLock};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
+
+static SPAWN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PtyOutput {
@@ -19,6 +21,7 @@ pub struct PtyExited {
     pub exit_code: i32,
 }
 
+#[allow(dead_code)]
 pub struct PtySession {
     pub id: String,
     pub killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
@@ -27,6 +30,8 @@ pub struct PtySession {
     pub tx: Sender<String>,
     pub rows: u16,
     pub cols: u16,
+    #[cfg(target_os = "windows")]
+    _job: Option<super::job::PtyJob>,
 }
 
 unsafe impl Send for PtySession {}
@@ -65,7 +70,6 @@ impl PtyManager {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let pair = pty_system.openpty(size).map_err(|e| e.to_string())?;
 
         let shell_path = shell.unwrap_or(if cfg!(target_os = "windows") {
             "powershell.exe"
@@ -86,8 +90,26 @@ impl PtyManager {
             cmd.cwd(dir);
         }
 
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let (pair, child) = {
+            let _lock = SPAWN_LOCK.lock().unwrap();
+            let p = pty_system.openpty(size).map_err(|e| e.to_string())?;
+            let c = p.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+            (p, c)
+        };
+        let mut child = child;
         drop(pair.slave);
+
+        #[cfg(target_os = "windows")]
+        let job = match child.process_id() {
+            Some(pid) => match super::job::PtyJob::create_for(pid) {
+                Ok(j) => Some(j),
+                Err(e) => {
+                    log::warn!("pty job-object setup failed for pid={}: {}", pid, e);
+                    None
+                }
+            },
+            None => None,
+        };
 
         let killer = child.clone_killer();
         let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -131,6 +153,8 @@ impl PtyManager {
             tx,
             rows,
             cols,
+            #[cfg(target_os = "windows")]
+            _job: job,
         });
 
         let mut sessions = self.sessions.lock().unwrap();

@@ -1,0 +1,34 @@
+{
+  "name": "NyxEdit Dark v2",
+  "version": "1.0.0",
+  "description": "Dark theme + custom icons untuk NyxEdit",
+  "type": "theme",
+  "theme": {
+    "--bg-primary": "#0d1117",
+    "--bg-surface": "#161b22",
+    "--bg-elevated": "#1c2333",
+    "--bg-hover": "#21262d",
+    "--text-primary": "#e6edf3",
+    "--text-muted": "#848d97",
+    "--border-subtle": "#293036",
+    "--accent-blue": "#58a6ff",
+    "--accent-green": "#3fb950",
+    "--accent-red": "#f85149",
+    "--accent-orange": "#d29922",
+    "--accent-purple": "#bc8cff",
+    "--tab-bg": "#0d1117",
+    "--tab-active": "#161b22",
+    "--tab-hover": "#21262d"
+  },
+  "icons": {
+    "ts": "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\"><rect x=\"2\" y=\"2\" width=\"20\" height=\"20\" rx=\"4\" fill=\"#3178c6\" fill-opacity=\"0.2\" stroke=\"#3178c6\" stroke-width=\"1.5\"/><path d=\"M9 14h3v6M12 14h3v2M10 10h1.5M13 10h1.5M9 8v4M15 8v4\" stroke=\"#3178c6\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><text x=\"12\" y=\"18\" fill=\"#3178c6\" font-family=\"monospace\" font-weight=\"bold\" font-size=\"9\" text-anchor=\"middle\">T</text></svg>",
+    "rs": "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\"><circle cx=\"12\" cy=\"12\" r=\"9\" stroke=\"#ff8243\" stroke-width=\"1.5\" fill=\"#ff8243\" fill-opacity=\"0.1\"/><path d=\"M8 12l2-2 2 2-2 2zM12 10l2-2 2 2-2 2zM10 14l2-2 2 2-2 2z\" fill=\"#ff8243\" fill-opacity=\"0.6\"/></svg>",
+    "py": "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"3\" fill=\"#3572A5\" fill-opacity=\"0.15\" stroke=\"#3572A5\" stroke-width=\"1.5\"/><path d=\"M9 10c0-1.1.9-2 2-2h2a2 2 0 012 2v4a2 2 0 01-2 2h-2a2 2 0 01-2-2v-1\" stroke=\"#3572A5\" stroke-width=\"1.5\" stroke-linecap=\"round\"/><path d=\"M10 9v1M14 14v1\" stroke=\"#3572A5\" stroke-width=\"1.5\" stroke-linecap=\"round\"/></svg>",
+    "json": "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\"><path d=\"M7 8l-3 4 3 4M17 8l3 4-3 4M10 6l4 12\" stroke=\"#10b981\" stroke-width=\"1.5\" stroke-linecap=\"round\"/></svg>",
+    "go": "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\"><path d=\"M6 16c-2 0-3-1-3-3v-2c0-2 1-3 3-3h1c2 0 3 1 3 3v2c0 2-1 3-3 3zm12 0c-2 0-3-1-3-3v-2c0-2 1-3 3-3h1c2 0 3 1 3 3v2c0 2-1 3-3 3z\" stroke=\"#00ADD8\" stroke-width=\"1.5\" fill=\"#00ADD8\" fill-opacity=\"0.1\"/><circle cx=\"8\" cy=\"12\" r=\"1.5\" fill=\"#00ADD8\"/><circle cx=\"16\" cy=\"12\" r=\"1.5\" fill=\"#00ADD8\"/></svg>"
+  },
+  "scripts": {
+    "install": "echo \"NyxEdit Dark v2 terinstal!\"",
+    "uninstall": "echo \"NyxEdit Dark v2 dihapus.\""
+  }
+}

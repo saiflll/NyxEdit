@@ -39,13 +39,13 @@
       cursorBlink: true,
       cursorStyle: "block",
       fontSize: 13,
-      fontFamily: localStorage.getItem("contlib-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+      fontFamily: localStorage.getItem("nyxedit-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
       theme: {
         background: c("--bg-primary", "#0d0d1a"),
         foreground: c("--text-primary", "#c0caf5"),
-        cursor: c("--accent-green", "#00ff66"),
+        cursor: c("--accent-blue", "#ff3366"),
         cursorAccent: c("--bg-primary", "#0d0d1a"),
-        selectionBackground: c("--accent-green", "#00ff66") + "40",
+        selectionBackground: c("--accent-blue", "#ff3366") + "40",
         black: c("--bg-elevated", "#1a1b3e"),
         red: c("--accent-red", "#f87171"),
         green: c("--accent-green", "#4ade80"),
@@ -76,9 +76,23 @@
     if (!terminalEl) return;
     terminal.open(terminalEl);
 
+    let pendingData = "";
+    let animationFrameId: number | null = null;
+
+    function flushTerminalData() {
+      if (pendingData && terminal) {
+        terminal.write(pendingData);
+        pendingData = "";
+      }
+      animationFrameId = null;
+    }
+
     unlisten = await listen<PtyOutputEvent>("pty-output", (event) => {
       if (event.payload.session_id === activeSessionId) {
-        terminal.write(event.payload.data);
+        pendingData += event.payload.data;
+        if (animationFrameId === null) {
+          animationFrameId = requestAnimationFrame(flushTerminalData);
+        }
       }
     });
 
@@ -88,26 +102,32 @@
       activeSessionId = sessionId;
     }
 
-    // Dynamic resize observer
+    // Dynamic resize observer with 30ms debounce & safe bounds checks to prevent UI freezing
+    let resizeTimeout: any = null;
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) {
-        try {
-          fitAddon.fit();
-        } catch (e) {
-          console.warn("xterm fit failed:", e);
+      if (resizeTimeout) clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(() => {
+        if (fitAddon && terminalEl && terminalEl.clientWidth > 0 && terminalEl.clientHeight > 0) {
+          try {
+            fitAddon.fit();
+          } catch (e) {
+            console.warn("xterm fit failed:", e);
+          }
         }
-      }
+        resizeTimeout = null;
+      }, 30);
     });
     resizeObserver.observe(terminalEl);
 
     // Initial fit
     setTimeout(() => {
-      if (fitAddon) {
+      if (fitAddon && terminalEl && terminalEl.clientWidth > 0 && terminalEl.clientHeight > 0) {
         try {
           fitAddon.fit();
         } catch (e) {}
       }
     }, 100);
+
 
     // Live theme update when CSS variables change
     function updateTermTheme() {
@@ -115,15 +135,15 @@
       const st = getComputedStyle(document.documentElement);
       function cv(name: string, fb: string) { return st.getPropertyValue(name).trim() || fb; }
       
-      const storedFont = localStorage.getItem("contlib-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
+      const storedFont = localStorage.getItem("nyxedit-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
       terminal.setOption("fontFamily", storedFont);
 
       terminal.setOption("theme", {
         background: cv("--bg-primary", "#0d0d1a"),
         foreground: cv("--text-primary", "#c0caf5"),
-        cursor: cv("--accent-green", "#00ff66"),
+        cursor: cv("--accent-blue", "#ff3366"),
         cursorAccent: cv("--bg-primary", "#0d0d1a"),
-        selectionBackground: cv("--accent-green", "#00ff66") + "40",
+        selectionBackground: cv("--accent-blue", "#ff3366") + "40",
         black: cv("--bg-elevated", "#1a1b3e"),
         red: cv("--accent-red", "#f87171"),
         green: cv("--accent-green", "#4ade80"),
@@ -179,6 +199,11 @@
     if (terminal) terminal.dispose();
     if (resizeObserver) resizeObserver.disconnect();
     if (themeObserver) themeObserver.disconnect();
+    if (activeSessionId) {
+      invoke("pty_close", { sessionId: activeSessionId }).catch((e) => {
+        console.error("Failed to close PTY session on destroy:", e);
+      });
+    }
   });
 
   async function openTerminal() {
@@ -214,13 +239,11 @@
     background: var(--bg-primary);
     border-radius: 6px;
     overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--text-primary) 15%, var(--border-primary));
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-    transition: border-color 0.2s, box-shadow 0.2s;
+    border: 1px solid var(--border-primary);
+    transition: border-color 0.2s;
   }
   .term:focus-within {
-    border-color: var(--text-primary);
-    box-shadow: 0 0 14px color-mix(in srgb, var(--text-primary) 25%, transparent);
+    border-color: var(--accent-blue);
   }
   .term-instance {
     width: 100%;

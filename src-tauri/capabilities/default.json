@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "core:window:default",
+    "core:window:allow-create",
+    "core:webview:default",
+    "core:webview:allow-create-webview-window",
     "core:window:allow-minimize",
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
@@ -23,7 +26,16 @@
     "dialog:allow-ask",
     "shell:default",
     "shell:allow-execute",
-    "shell:allow-open",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" },
+        { "url": "file:///**" },
+        { "url": "mailto:*" },
+        { "url": "tel:*" }
+      ]
+    },
     "process:default",
     "process:allow-exit",
     "fs:default",

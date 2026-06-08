@@ -2,6 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { writable } from 'svelte/store';
 
+export type AgentPersona = {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  instructions: string;
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -12,11 +20,34 @@ export type Agent = {
   capabilities: string[];
   temperature: number | null;
   system_prompt: string | null;
+  persona_id: string | null;
+  built_in: boolean;
+};
+
+export type AiToolCallEvent = {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+};
+
+export type AiToolResultEvent = {
+  id: string;
+  name: string;
+  result: string;
 };
 
 export type ChatMessage = {
   role: string;
   content: string;
+};
+
+export type ChatSession = {
+  id: string;
+  name: string;
+  agent_id: string;
+  messages: ChatMessage[];
+  created_at: string;
+  updated_at: string;
 };
 
 export type FileEntry = {
@@ -27,7 +58,7 @@ export type FileEntry = {
   modified: string;
 };
 
-export type TabType = "terminal" | "ai" | "notepad" | "editor" | "files";
+export type TabType = "terminal" | "ai" | "runner" | "editor" | "files";
 
 export type Tab = {
   id: string;
@@ -55,10 +86,6 @@ export const activeTerminalSessionId = writable<string | null>(null);
 export const agents = writable<Agent[]>([]);
 export const chatMessages = writable<ChatMessage[]>([]);
 export const selectedAgent = writable<string>("coder");
-
-// Notepad state
-export const notepadContent = writable<string>("");
-export const notepadLanguage = writable<string>("typescript");
 
 // Split terminal state
 export const splitLayout = writable<string>("horizontal"); // "horizontal" | "vertical" | "quad"
@@ -99,10 +126,6 @@ export function sendChat(agentId: string, messages: ChatMessage[]) {
   });
 }
 
-export function autoRoute(taskType: string) {
-  return invoke<Agent[]>("ai_auto_route", { taskType });
-}
-
 // CodeEditor languages configuration store
 export type LangConfig = {
   id: string;
@@ -122,7 +145,7 @@ export const SUPPORTED_LANGS: LangConfig[] = [
   { id: "json", name: "JSON & Locks", description: "Enables object brace matching, keys highlighting & maps parsing for configs.", extensions: ["json", "lock"], iconText: "JSON", color: "#10b981" },
   { id: "markdown", name: "Markdown Docs", description: "Enables bold, header styling, list parsing and guides for documentation.", extensions: ["md"], iconText: "MD", color: "#a855f7" },
   { id: "go", name: "Go Lang", description: "Enables keywords highlighting, structure parsing for Go (.go) backend files.", extensions: ["go"], iconText: "GO", color: "#00ADD8" },
-  { id: "cpp", name: "C / C++ / C#", description: "Enables high-performance systems highlighting for .c, .cpp, .h, .hpp, .cs files.", extensions: ["c", "cpp", "h", "hpp", "cs"], iconText: "C++", color: "#3b82f6" },
+  { id: "cpp", name: "C / C++ / Arduino", description: "Enables syntax highlighting for .c, .cpp, .h, .hpp, .ino (Arduino) files.", extensions: ["c", "cpp", "h", "hpp", "ino"], iconText: "C++", color: "#3b82f6" },
   { id: "java", name: "Java Language", description: "Enables strong type checking highlighting, class structures parsing for .java files.", extensions: ["java"], iconText: "JAVA", color: "#ea2d2e" },
   { id: "php", name: "PHP Server Side", description: "Enables syntax keywords highlighting, tag scripting support for .php pages.", extensions: ["php"], iconText: "PHP", color: "#777bb4" },
   { id: "sql", name: "SQL Databases", description: "Enables database query commands, schema syntax highlighting for .sql scripts.", extensions: ["sql"], iconText: "SQL", color: "#e38c00" },
@@ -148,7 +171,7 @@ function getInitialLangs(): Record<string, boolean> {
     xml: false
   };
   try {
-    const stored = localStorage.getItem("contlib-editor-langs");
+    const stored = localStorage.getItem("codlib-editor-langs");
     if (stored) {
       return { ...DEFAULT_LANGS, ...JSON.parse(stored) };
     }
@@ -161,8 +184,25 @@ export const editorLanguages = writable<Record<string, boolean>>(getInitialLangs
 export function saveEditorLangs(langs: Record<string, boolean>) {
   editorLanguages.set(langs);
   try {
-    localStorage.setItem("contlib-editor-langs", JSON.stringify(langs));
+    localStorage.setItem("codlib-editor-langs", JSON.stringify(langs));
   } catch (e) {
     console.error("Failed to save editor languages to localStorage:", e);
   }
+}
+
+// ─── Toast system ────────────────────────────────
+export type Toast = {
+  id: string;
+  message: string;
+  type: "info" | "success" | "error";
+};
+
+export const toasts = writable<Toast[]>([]);
+
+export function addToast(message: string, type: Toast["type"] = "info") {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  toasts.update((t) => [...t, { id, message, type }]);
+  setTimeout(() => {
+    toasts.update((t) => t.filter((x) => x.id !== id));
+  }, 3500);
 }
