@@ -70,6 +70,12 @@ pub fn run() {
             fs::git_discard_file,
             fs::git_stage_all,
             fs::git_unstage_all,
+            fs::git_init,
+            fs::git_push,
+            fs::git_pull,
+            fs::git_sync,
+            fs::git_diff_uncommitted,
+            fs::git_remote_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

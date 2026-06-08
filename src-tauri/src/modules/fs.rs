@@ -265,7 +265,72 @@ pub fn fs_search_contents(path: String, query: String, max_results: Option<usize
 }
 
 #[tauri::command]
-pub fn sys_check_installed(cmd: String) -> bool {
+pub fn run_git(repo_path: &str, args: &[&str]) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(repo_path);
+    #[cfg(target_os = "windows")] {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let out = cmd.output().map_err(|e| format!("git error: {}", e))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { "git command failed".into() } else { err });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[tauri::command]
+pub fn git_init(repo_path: String) -> Result<(), String> {
+    run_git(&repo_path, &["init"])?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_push(repo_path: String, remote: Option<String>, branch: Option<String>) -> Result<String, String> {
+    let remote = remote.unwrap_or_else(|| "origin".into());
+    let branch = branch.unwrap_or_else(|| {
+        run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "main".into())
+    });
+    let out = run_git(&repo_path, &["push", "-u", &remote, &branch])?;
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn git_pull(repo_path: String, remote: Option<String>, branch: Option<String>) -> Result<String, String> {
+    let remote = remote.unwrap_or_else(|| "origin".into());
+    let branch = branch.unwrap_or_else(|| {
+        run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "main".into())
+    });
+    let out = run_git(&repo_path, &["pull", &remote, &branch])?;
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn git_sync(repo_path: String) -> Result<String, String> {
+    let branch = run_git(&repo_path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|_| "main".into());
+    let remote = run_git(&repo_path, &["remote", "get-url", "origin"]).unwrap_or_default();
+    if remote.is_empty() {
+        return Err("No remote configured. Set a remote first.".into());
+    }
+    run_git(&repo_path, &["fetch", "--all"])?;
+    run_git(&repo_path, &["pull", "origin", &branch])?;
+    let out = run_git(&repo_path, &["push", "-u", "origin", &branch])?;
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn git_diff_uncommitted(repo_path: String, staged: bool) -> Result<String, String> {
+    let args = if staged { &["diff", "--cached"] as &[&str] } else { &["diff"] as &[&str] };
+    run_git(&repo_path, args)
+}
+
+#[tauri::command]
+pub fn git_remote_url(repo_path: String) -> Result<String, String> {
+    run_git(&repo_path, &["remote", "get-url", "origin"])
+}
+
+fn sys_check_installed(cmd: String) -> bool {
     let mut check_cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("powershell.exe");
         c.args(&["-Command", &format!("Get-Command {} -ErrorAction SilentlyContinue", cmd)]);
