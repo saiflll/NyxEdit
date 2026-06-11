@@ -3,7 +3,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getDefaultIconSvg } from "$lib/icon-overrides";
 
-
   let {
     filePath = $bindable(""),
     initialContent = "",
@@ -45,7 +44,7 @@
     h: "c",
     hpp: "cpp",
     hxx: "cpp",
-    ino: "cpp",   // Arduino sketch = C++ dialect
+    ino: "cpp", // Arduino sketch = C++ dialect
     sh: "shell",
     bash: "shell",
     zsh: "shell",
@@ -67,6 +66,24 @@
   async function saveFile() {
     if (!filePath) return;
     try {
+      if (filePath.startsWith("sftp://")) {
+        const rest = filePath.slice(7);
+        const slashIdx = rest.indexOf("/");
+        if (slashIdx > 0) {
+          const sessionId = rest.substring(0, slashIdx);
+          const remotePath = rest.substring(slashIdx);
+          await invoke("sftp_write_file", {
+            sessionId,
+            remotePath,
+            content: currentContent,
+          });
+          isDirty = false;
+          onDirtyChange(false);
+          onSave(filePath, currentContent);
+          return;
+        }
+      }
+
       await invoke("fs_write_file", {
         path: filePath,
         content: currentContent,
@@ -95,13 +112,35 @@
 
   onMount(async () => {
     const codemirror = await import("codemirror");
-    const { EditorView, keymap, lineNumbers, highlightActiveLine,
-            highlightSpecialChars, drawSelection, rectangularSelection } = await import("@codemirror/view");
+    const {
+      EditorView,
+      keymap,
+      lineNumbers,
+      highlightActiveLine,
+      highlightSpecialChars,
+      drawSelection,
+      rectangularSelection,
+    } = await import("@codemirror/view");
     const { EditorState, Compartment } = await import("@codemirror/state");
-    const { defaultKeymap, history, historyKeymap, indentWithTab } = await import("@codemirror/commands");
-    const { HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, foldGutter, foldKeymap } = await import("@codemirror/language");
-    const { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } = await import("@codemirror/autocomplete");
-    const { searchKeymap, highlightSelectionMatches } = await import("@codemirror/search");
+    const { defaultKeymap, history, historyKeymap, indentWithTab } =
+      await import("@codemirror/commands");
+    const {
+      HighlightStyle,
+      syntaxHighlighting,
+      bracketMatching,
+      indentOnInput,
+      foldGutter,
+      foldKeymap,
+    } = await import("@codemirror/language");
+    const {
+      autocompletion,
+      completionKeymap,
+      closeBrackets,
+      closeBracketsKeymap,
+    } = await import("@codemirror/autocomplete");
+    const { searchKeymap, highlightSelectionMatches } = await import(
+      "@codemirror/search"
+    );
     const { lintKeymap } = await import("@codemirror/lint");
     const { tags } = await import("@lezer/highlight");
 
@@ -110,7 +149,11 @@
     // Premium theme-aware syntax highlight style using CSS variables for live-switching
     const myHighlightStyle = HighlightStyle.define([
       { tag: tags.keyword, color: "var(--accent-blue)", fontWeight: "bold" },
-      { tag: tags.controlKeyword, color: "var(--accent-blue)", fontWeight: "bold" },
+      {
+        tag: tags.controlKeyword,
+        color: "var(--accent-blue)",
+        fontWeight: "bold",
+      },
       { tag: tags.string, color: "var(--accent-green)" },
       { tag: tags.character, color: "var(--accent-green)" },
       { tag: tags.number, color: "var(--accent-yellow)" },
@@ -120,8 +163,15 @@
       { tag: tags.comment, color: "var(--text-muted)", fontStyle: "italic" },
       { tag: tags.variableName, color: "var(--text-primary)" },
       { tag: tags.propertyName, color: "var(--accent-cyan, #22d3ee)" },
-      { tag: tags.function(tags.variableName), color: "var(--accent-indigo, #818cf8)" },
-      { tag: tags.definition(tags.variableName), color: "var(--text-primary)", fontWeight: "600" },
+      {
+        tag: tags.function(tags.variableName),
+        color: "var(--accent-indigo, #818cf8)",
+      },
+      {
+        tag: tags.definition(tags.variableName),
+        color: "var(--text-primary)",
+        fontWeight: "600",
+      },
       { tag: tags.operator, color: "var(--text-secondary)" },
       { tag: tags.className, color: "var(--accent-purple, #a78bfa)" },
       { tag: tags.tagName, color: "var(--accent-blue)" },
@@ -163,14 +213,32 @@
         }),
         langCompartment.of([]),
         EditorView.theme({
-          "&": { fontSize: "13px", backgroundColor: "var(--bg-primary)", color: "var(--text-primary)" },
+          "&": {
+            fontSize: "13px",
+            backgroundColor: "transparent",
+            color: "var(--text-primary)",
+          },
           ".cm-scroller": { fontFamily: "var(--font-family, inherit)" },
-          ".cm-gutters": { backgroundColor: "var(--bg-surface)", borderRight: "1px solid var(--border-primary)", color: "var(--text-muted)" },
+          ".cm-gutters": {
+            backgroundColor: "var(--bg-surface)",
+            borderRight: "1px solid var(--border-primary)",
+            color: "var(--text-muted)",
+          },
           ".cm-activeLineGutter": { backgroundColor: "var(--bg-hover)" },
           ".cm-cursor": { borderLeftColor: "var(--accent-blue)" },
-          ".cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--accent-blue) 30%, transparent) !important" },
-          "&.cm-focused .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--accent-blue) 40%, transparent) !important" },
-          ".cm-matchingBracket": { backgroundColor: "color-mix(in srgb, var(--accent-blue) 20%, transparent)", borderBottom: "1px solid var(--accent-blue)" },
+          ".cm-selectionBackground": {
+            backgroundColor:
+              "color-mix(in srgb, var(--accent-blue) 30%, transparent) !important",
+          },
+          "&.cm-focused .cm-selectionBackground": {
+            backgroundColor:
+              "color-mix(in srgb, var(--accent-blue) 40%, transparent) !important",
+          },
+          ".cm-matchingBracket": {
+            backgroundColor:
+              "color-mix(in srgb, var(--accent-blue) 20%, transparent)",
+            borderBottom: "1px solid var(--accent-blue)",
+          },
         }),
       ],
     });
@@ -183,7 +251,11 @@
     // Load initial content and language support
     if (initialContent) {
       editor.dispatch({
-        changes: { from: 0, to: editor.state.doc.length, insert: initialContent }
+        changes: {
+          from: 0,
+          to: editor.state.doc.length,
+          insert: initialContent,
+        },
       });
       currentContent = initialContent;
       isDirty = false;
@@ -200,7 +272,7 @@
       const currentDoc = state.doc.toString();
       if (currentDoc !== initialContent) {
         editor.dispatch({
-          changes: { from: 0, to: state.doc.length, insert: initialContent }
+          changes: { from: 0, to: state.doc.length, insert: initialContent },
         });
         currentContent = initialContent;
         isDirty = false;
@@ -238,9 +310,10 @@
         case "typescript":
         case "javascript": {
           const m = await import("@codemirror/lang-javascript");
-          extension = fileType === "typescript"
-            ? m.javascript({ typescript: true })
-            : m.javascript();
+          extension =
+            fileType === "typescript"
+              ? m.javascript({ typescript: true })
+              : m.javascript();
           break;
         }
         case "rust": {
@@ -361,27 +434,59 @@
         <span class="editor-file-icon">{@html fileInfo.svg}</span>
         <div class="editor-file-info">
           <span class="editor-file-name">{fileInfo.name}</span>
-          <span class="editor-file-dir">{filePath.substring(0, filePath.length - fileInfo.name.length)}</span>
+          <span class="editor-file-dir"
+            >{filePath.substring(
+              0,
+              filePath.length - fileInfo.name.length,
+            )}</span
+          >
         </div>
       {:else}
         <span class="editor-file-icon">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.5">
-            <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--text-muted)"
+            stroke-width="1.5"
+          >
+            <path
+              d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"
+            />
           </svg>
         </span>
-        <span class="editor-file-name" style="color: var(--text-muted)">Untitled File</span>
+        <span class="editor-file-name" style="color: var(--text-muted)"
+          >Untitled File</span
+        >
       {/if}
     </div>
-    
+
     <div class="editor-actions">
       {#if isDirty}
         <span class="dirty-badge">● Unsaved Changes</span>
       {/if}
-      <button onclick={saveFile} class="save-btn" class:dirty={isDirty} disabled={!isDirty}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-          <polyline points="17 21 17 13 7 13 7 21"/>
-          <polyline points="7 3 7 8 15 8"/>
+      <button
+        onclick={saveFile}
+        class="save-btn"
+        class:dirty={isDirty}
+        disabled={!isDirty}
+      >
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path
+            d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"
+          />
+          <polyline points="17 21 17 13 7 13 7 21" />
+          <polyline points="7 3 7 8 15 8" />
         </svg>
         <span>Save (Ctrl+S)</span>
       </button>
@@ -395,7 +500,9 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-primary);
+    background: var(--glass-bg, var(--bg-secondary));
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
   }
   .editor-header {
     display: flex;
@@ -403,10 +510,11 @@
     justify-content: space-between;
     height: 42px;
     padding: 0 14px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-primary);
+    background: var(--glass-bg, var(--bg-secondary));
+    border-bottom: 1px solid var(--glass-border, var(--border-primary));
     flex-shrink: 0;
-    backdrop-filter: blur(8px);
+    backdrop-filter: blur(var(--glass-blur, 8px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 8px));
   }
   .editor-title-area {
     display: flex;
@@ -513,7 +621,7 @@
   .editor-instance :global(.cm-scroller) {
     overflow: auto;
   }
-  
+
   /* Scrollbar styles for the editor scroller */
   .editor-instance :global(.cm-scroller::-webkit-scrollbar) {
     width: 6px;
@@ -531,7 +639,12 @@
   }
 
   @keyframes pulse {
-    0%, 100% { opacity: 0.85; }
-    50% { opacity: 0.5; }
+    0%,
+    100% {
+      opacity: 0.85;
+    }
+    50% {
+      opacity: 0.5;
+    }
   }
 </style>

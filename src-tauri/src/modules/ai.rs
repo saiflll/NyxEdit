@@ -2,8 +2,10 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::oneshot;
 use tauri::Emitter;
+use chrono::Utc;
 
 #[derive(Clone, Serialize)]
 pub struct AgentPersona {
@@ -89,6 +91,8 @@ pub struct AgentConfig {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_content: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -169,6 +173,8 @@ fn model_price(model: &str) -> (f64, f64) {
 pub struct AiManager {
     pub agents: Arc<Mutex<HashMap<String, AgentConfig>>>,
     pub usage: Arc<Mutex<HashMap<String, AgentUsage>>>,
+    /// Current workspace root for agent log files
+    pub workspace_root: Arc<Mutex<String>>,
 }
 
 impl AiManager {
@@ -177,6 +183,7 @@ impl AiManager {
         Self {
             agents: Arc::new(Mutex::new(agents)),
             usage: Arc::new(Mutex::new(HashMap::new())),
+            workspace_root: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -234,6 +241,29 @@ impl AiManager {
         let mut agents = self.agents.lock().unwrap();
         agents.remove(agent_id);
         Ok(())
+    }
+
+    /// Set the current workspace root (used to determine .nyx log dir)
+    pub fn set_workspace_root(&self, root: &str) {
+        let mut wr = self.workspace_root.lock().unwrap();
+        *wr = root.to_string();
+    }
+
+    /// Write a line to the agent log file at .nyx/logs/agent-{id}.log
+    pub fn write_agent_log(&self, agent_id: &str, agent_name: &str, line: &str) {
+        let workspace_root = self.workspace_root.lock().unwrap().clone();
+        if workspace_root.is_empty() { return; }
+        let sep = if workspace_root.contains('\\') { "\\" } else { "/" };
+        let log_dir = format!("{}{}.nyx{}logs", workspace_root, sep, sep);
+        let log_path = format!("{}{}{}.log", log_dir, sep, agent_id);
+        // Ensure log dir exists (best-effort)
+        let _ = std::fs::create_dir_all(&log_dir);
+        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+        let entry = format!("[{}][{}] {}\n", timestamp, agent_name, line);
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = f.write_all(entry.as_bytes());
+        }
     }
 }
 
@@ -534,8 +564,85 @@ fn build_tools() -> Vec<ToolDef> {
     ]
 }
 
+#[derive(Clone, Serialize)]
+pub struct BashPermissionRequest {
+    pub id: String,
+    pub command: String,
+    pub cwd: String,
+}
+
+static PENDING_BASH_PERMISSIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>>> = OnceLock::new();
+
+fn get_pending_bash_permissions() -> &'static Mutex<HashMap<String, oneshot::Sender<Result<String, String>>>> {
+    PENDING_BASH_PERMISSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub fn ai_respond_bash_permission(
+    id: String,
+    approved: bool,
+    modified_command: Option<String>,
+) -> Result<(), String> {
+    let mut pending = get_pending_bash_permissions().lock().unwrap();
+    if let Some(tx) = pending.remove(&id) {
+        if approved {
+            let cmd = modified_command.unwrap_or_default();
+            let _ = tx.send(Ok(cmd));
+        } else {
+            let _ = tx.send(Err("Permission denied by user".to_string()));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Serialize)]
+pub struct FileWritePermissionRequest {
+    pub id: String,
+    pub path: String,
+    pub is_edit: bool,
+    pub diff: Vec<serde_json::Value>,
+}
+
+static PENDING_FILE_PERMISSIONS: OnceLock<Mutex<HashMap<String, oneshot::Sender<bool>>>> = OnceLock::new();
+
+fn get_pending_file_permissions() -> &'static Mutex<HashMap<String, oneshot::Sender<bool>>> {
+    PENDING_FILE_PERMISSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub fn ai_respond_file_permission(
+    id: String,
+    approved: bool,
+) -> Result<(), String> {
+    let mut pending = get_pending_file_permissions().lock().unwrap();
+    if let Some(tx) = pending.remove(&id) {
+        let _ = tx.send(approved);
+    }
+    Ok(())
+}
+
+fn compute_diff_lines(old_content: &str, new_content: &str) -> Vec<serde_json::Value> {
+    use similar::{ChangeTag, TextDiff};
+    let diff = TextDiff::from_lines(old_content, new_content);
+    let mut diff_lines = Vec::new();
+    for change in diff.iter_all_changes() {
+        let tag = match change.tag() {
+            ChangeTag::Delete => "deleted",
+            ChangeTag::Insert => "added",
+            ChangeTag::Equal => "unchanged",
+        };
+        diff_lines.push(serde_json::json!({
+            "type": tag,
+            "text": change.value(),
+            "old_index": change.old_index(),
+            "new_index": change.new_index(),
+        }));
+    }
+    diff_lines
+}
+
 /// Execute a tool call and return the result as a string.
-async fn execute_tool(tc: &ToolCall, workspace_root: &str) -> Result<String, String> {
+async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_root: &str, is_private: bool) -> Result<String, String> {
     match tc.name.as_str() {
         "read_file" => {
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
@@ -549,25 +656,90 @@ async fn execute_tool(tc: &ToolCall, workspace_root: &str) -> Result<String, Str
         "write_file" => {
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
             let content = tc.arguments["content"].as_str().ok_or("missing content")?;
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
+            let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+            
+            if old_content == content {
+                return Ok(format!("File {} already contains the requested content, no changes needed.", path));
             }
-            tokio::fs::write(path, content).await.map_err(|e| format!("write_file error: {}", e))?;
-            Ok(format!("Written {} bytes to {}", content.len(), path))
+
+            if let Some(app) = app {
+                let diff = compute_diff_lines(&old_content, content);
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending = get_pending_file_permissions().lock().unwrap();
+                    pending.insert(tc.id.clone(), tx);
+                }
+
+                let _ = app.emit("ai:request_file_permission", FileWritePermissionRequest {
+                    id: tc.id.clone(),
+                    path: path.to_string(),
+                    is_edit: false,
+                    diff,
+                });
+
+                match rx.await {
+                    Ok(true) => {
+                        if let Some(parent) = std::path::Path::new(path).parent() {
+                            tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
+                        }
+                        tokio::fs::write(path, content).await.map_err(|e| format!("write_file error: {}", e))?;
+                        Ok(format!("Successfully wrote file: {}", path))
+                    }
+                    Ok(false) => Err("File write permission denied by user".to_string()),
+                    Err(_) => Err("Permission request channel cancelled".to_string()),
+                }
+            } else {
+                if let Some(parent) = std::path::Path::new(path).parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
+                }
+                tokio::fs::write(path, content).await.map_err(|e| format!("write_file error: {}", e))?;
+                Ok(format!("Written {} bytes to {}", content.len(), path))
+            }
         }
         "edit" => {
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
             let old = tc.arguments["old_string"].as_str().ok_or("missing old_string")?;
             let new = tc.arguments["new_string"].as_str().ok_or("missing new_string")?;
-            let content = tokio::fs::read_to_string(path).await
+            let old_content = tokio::fs::read_to_string(path).await
                 .map_err(|e| format!("edit read error: {}", e))?;
-            if !content.contains(old) {
+            if !old_content.contains(old) {
                 return Err("edit: old_string not found in file".into());
             }
-            let new_content = content.replace(old, new);
-            tokio::fs::write(path, &new_content).await
-                .map_err(|e| format!("edit write error: {}", e))?;
-            Ok(format!("Replaced one occurrence in {}", path))
+            let new_content = old_content.replace(old, new);
+
+            if old_content == new_content {
+                return Ok(format!("No changes to make in {}", path));
+            }
+
+            if let Some(app) = app {
+                let diff = compute_diff_lines(&old_content, &new_content);
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending = get_pending_file_permissions().lock().unwrap();
+                    pending.insert(tc.id.clone(), tx);
+                }
+
+                let _ = app.emit("ai:request_file_permission", FileWritePermissionRequest {
+                    id: tc.id.clone(),
+                    path: path.to_string(),
+                    is_edit: true,
+                    diff,
+                });
+
+                match rx.await {
+                    Ok(true) => {
+                        tokio::fs::write(path, &new_content).await
+                            .map_err(|e| format!("edit write error: {}", e))?;
+                        Ok(format!("Successfully applied edit to {}", path))
+                    }
+                    Ok(false) => Err("Edit permission denied by user".to_string()),
+                    Err(_) => Err("Permission request channel cancelled".to_string()),
+                }
+            } else {
+                tokio::fs::write(path, &new_content).await
+                    .map_err(|e| format!("edit write error: {}", e))?;
+                Ok(format!("Replaced one occurrence in {}", path))
+            }
         }
         "grep" => {
             let pattern = tc.arguments["pattern"].as_str().ok_or("missing pattern")?;
@@ -637,16 +809,50 @@ async fn execute_tool(tc: &ToolCall, workspace_root: &str) -> Result<String, Str
             Ok(lines.join("\n"))
         }
         "bash_run" => {
+            if is_private {
+                return Err("Permission denied: active terminal session is private (AI restricted)".to_string());
+            }
             let command = tc.arguments["command"].as_str().ok_or("missing command")?;
             let cwd = tc.arguments["cwd"].as_str().unwrap_or("");
             let timeout_secs = tc.arguments["timeout"].as_u64().unwrap_or(30);
+
+            // Ask for permission if AppHandle is present
+            let command_to_run = if let Some(app) = app {
+                let (tx, rx) = oneshot::channel();
+                {
+                    let mut pending = get_pending_bash_permissions().lock().unwrap();
+                    pending.insert(tc.id.clone(), tx);
+                }
+
+                let _ = app.emit("ai:request_tool_permission", BashPermissionRequest {
+                    id: tc.id.clone(),
+                    command: command.to_string(),
+                    cwd: cwd.to_string(),
+                });
+
+                // Wait for the oneshot receiver
+                match rx.await {
+                    Ok(Ok(cmd_override)) => {
+                        if cmd_override.is_empty() {
+                            command.to_string()
+                        } else {
+                            cmd_override
+                        }
+                    }
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err("Permission request channel cancelled".to_string()),
+                }
+            } else {
+                command.to_string()
+            };
+
             let mut cmd = if cfg!(target_os = "windows") {
                 let mut c = tokio::process::Command::new("cmd");
-                c.arg("/C").arg(command);
+                c.arg("/C").arg(&command_to_run);
                 c
             } else {
                 let mut c = tokio::process::Command::new("sh");
-                c.arg("-c").arg(command);
+                c.arg("-c").arg(&command_to_run);
                 c
             };
             if !cwd.is_empty() {
@@ -697,9 +903,11 @@ pub struct AiToolResultEvent {
 
 async fn run_react_loop(
     app: &tauri::AppHandle,
+    state: &AiManager,
     agent: &AgentConfig,
     messages: &[ChatMessage],
     base_url: &str,
+    is_private: bool,
 ) -> Result<(String, u64, u64), String> {
     let tools = build_tools();
     let tool_defs: Vec<Value> = tools.iter().map(|t| serde_json::json!({
@@ -789,6 +997,9 @@ async fn run_react_loop(
 
             // Emit tool calls to frontend
             for tc in &tool_calls {
+                state.write_agent_log(&agent.id, &agent.name,
+                    &format!("TOOL_CALL id={} name={} arguments={}", tc.id, tc.name, tc.arguments.to_string()));
+
                 let _ = app.emit("ai:tool_call", AiToolCallEvent {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
@@ -798,7 +1009,11 @@ async fn run_react_loop(
 
             // Execute and emit results
             for tc in &tool_calls {
-                let result = execute_tool(tc, &workspace_root).await.unwrap_or_else(|e| format!("Error: {}", e));
+                let result = execute_tool(Some(app), tc, &workspace_root, is_private).await.unwrap_or_else(|e| format!("Error: {}", e));
+                
+                state.write_agent_log(&agent.id, &agent.name,
+                    &format!("TOOL_RESULT id={} name={} result_len={}", tc.id, tc.name, result.len()));
+
                 let _ = app.emit("ai:tool_result", AiToolResultEvent {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
@@ -828,10 +1043,18 @@ pub async fn ai_chat_stream(
     app: tauri::AppHandle,
     state: tauri::State<'_, AiManager>,
     secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
+    pty_state: tauri::State<'_, crate::modules::pty::PtyManager>,
     agent_id: String,
     messages: Vec<ChatMessage>,
+    workspace_root: Option<String>,
+    active_session_id: Option<String>,
 ) -> Result<(), String> {
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
+
+    // Update workspace root for logging
+    if let Some(ref root) = workspace_root {
+        state.set_workspace_root(root);
+    }
 
     if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
         agent.api_key = Some(real_key);
@@ -853,18 +1076,32 @@ pub async fn ai_chat_stream(
         return Err(msg);
     }
 
+    let is_private = if let Some(ref sid) = active_session_id {
+        pty_state.is_private(sid)
+    } else {
+        false
+    };
+
     // Use ReAct loop for persona agents, simple streaming for others
     let result = if agent.persona_id.is_some() {
-        run_react_loop(&app, &agent, &messages, &base_url).await
+        run_react_loop(&app, &state, &agent, &messages, &base_url, is_private).await
     } else {
         stream_openai(&app, &agent, &messages, &base_url).await
     };
+
+    // Log agent invocation
+    state.write_agent_log(&agent.id, &agent.name,
+        &format!("INVOKED model={}/{} messages={}", agent.provider, agent.model, messages.len()));
 
     match result {
         Ok((content, input_tokens, output_tokens)) => {
             let (price_in, price_out) = model_price(&agent.model);
             let cost = (input_tokens as f64 * price_in + output_tokens as f64 * price_out) / 1000.0;
             state.record_usage(&agent.id, input_tokens, output_tokens, cost);
+
+            // Log completion
+            state.write_agent_log(&agent.id, &agent.name,
+                &format!("DONE input_tokens={} output_tokens={} cost=${:.5}", input_tokens, output_tokens, cost));
 
             let _ = app.emit("ai:done", AiStreamDone {
                 content,
@@ -877,6 +1114,7 @@ pub async fn ai_chat_stream(
             Ok(())
         }
         Err(e) => {
+            state.write_agent_log(&agent.id, &agent.name, &format!("ERROR {}", e));
             let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
             Err(e)
         }
@@ -892,6 +1130,52 @@ pub fn ai_get_usage(state: tauri::State<'_, AiManager>) -> Vec<AgentUsage> {
 pub fn ai_reset_usage(state: tauri::State<'_, AiManager>) -> Result<(), String> {
     state.reset_usage();
     Ok(())
+}
+
+/// Set the current workspace root so AI knows where to write logs.
+#[tauri::command]
+pub fn ai_set_workspace(state: tauri::State<'_, AiManager>, root: String) -> Result<(), String> {
+    state.set_workspace_root(&root);
+    Ok(())
+}
+
+/// List all agent log files in .nyx/logs/
+#[derive(Serialize, Deserialize)]
+pub struct AgentLogEntry {
+    pub agent_id: String,
+    pub path: String,
+    pub size: u64,
+    pub modified: String,
+}
+
+#[tauri::command]
+pub fn ai_get_agent_logs(state: tauri::State<'_, AiManager>) -> Vec<AgentLogEntry> {
+    let workspace_root = state.workspace_root.lock().unwrap().clone();
+    if workspace_root.is_empty() { return vec![]; }
+    let sep = if workspace_root.contains('\\') { "\\" } else { "/" };
+    let log_dir = format!("{}{}.nyx{}logs", workspace_root, sep, sep);
+    let mut result = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&log_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("log") {
+                let name = p.file_stem().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                let meta = std::fs::metadata(&p).ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified = meta.and_then(|m| m.modified().ok()).map(|t| {
+                    let dt = chrono::DateTime::<chrono::Utc>::from(t);
+                    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                }).unwrap_or_default();
+                result.push(AgentLogEntry {
+                    agent_id: name,
+                    path: p.to_string_lossy().to_string(),
+                    size,
+                    modified,
+                });
+            }
+        }
+    }
+    result
 }
 
 #[tauri::command]
@@ -1109,19 +1393,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_file() {
-        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml"})), ".").await.unwrap();
+        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml"})), ".", false).await.unwrap();
         assert!(r.contains("[package]"));
     }
 
     #[tokio::test]
     async fn test_read_file_offset() {
-        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml", "offset": 0, "limit": 3})), ".").await.unwrap();
+        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml", "offset": 0, "limit": 3})), ".", false).await.unwrap();
         assert!(r.lines().count() <= 3);
     }
 
     #[tokio::test]
     async fn test_read_file_not_found() {
-        let r = execute_tool(&tc("read_file", json!({"path": "_no_such_file_69"})), ".").await;
+        let r = execute_tool(&tc("read_file", json!({"path": "_no_such_file_69"})), ".", false).await;
         assert!(r.is_err());
     }
 
@@ -1129,9 +1413,9 @@ mod tests {
     async fn test_write_edit_cycle() {
         let p = "_test_we.txt";
         let _ = std::fs::remove_file(p);
-        execute_tool(&tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".").await.unwrap();
+        execute_tool(&tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".", false).await.unwrap();
         assert!(Path::new(p).exists());
-        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".").await.unwrap();
+        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".", false).await.unwrap();
         assert!(r.contains("Replaced"));
         let c = std::fs::read_to_string(p).unwrap();
         assert!(c.contains("baz"));
@@ -1143,7 +1427,7 @@ mod tests {
     async fn test_write_creates_dirs() {
         let p = "_test_dir_nested/f/a.txt";
         let _ = std::fs::remove_dir_all("_test_dir_nested");
-        execute_tool(&tc("write_file", json!({"path": p, "content": "x"})), ".").await.unwrap();
+        execute_tool(&tc("write_file", json!({"path": p, "content": "x"})), ".", false).await.unwrap();
         assert!(Path::new(p).exists());
         let _ = std::fs::remove_dir_all("_test_dir_nested");
     }
@@ -1152,7 +1436,7 @@ mod tests {
     async fn test_edit_not_found_errs() {
         let p = "_test_ef.txt";
         std::fs::write(p, "hello").unwrap();
-        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "nope", "new_string": "x"})), ".").await;
+        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "nope", "new_string": "x"})), ".", false).await;
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("old_string not found"));
         let _ = std::fs::remove_file(p);
@@ -1160,43 +1444,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_grep() {
-        let r = execute_tool(&tc("grep", json!({"pattern": "tauri", "root": "."})), ".").await.unwrap();
+        let r = execute_tool(&tc("grep", json!({"pattern": "tauri", "root": "."})), ".", false).await.unwrap();
         assert!(r.contains("tauri"));
     }
 
     #[tokio::test]
     async fn test_glob() {
-        let r = execute_tool(&tc("glob", json!({"pattern": "Cargo.toml", "root": "."})), ".").await.unwrap();
+        let r = execute_tool(&tc("glob", json!({"pattern": "Cargo.toml", "root": "."})), ".", false).await.unwrap();
         assert!(r.contains("Cargo.toml"));
     }
 
     #[tokio::test]
     async fn test_list_directory() {
-        let r = execute_tool(&tc("list_directory", json!({"path": "."})), ".").await.unwrap();
+        let r = execute_tool(&tc("list_directory", json!({"path": "."})), ".", false).await.unwrap();
         assert!(r.contains("src"));
     }
 
     #[tokio::test]
     async fn test_bash_run() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "echo hello_test_42", "timeout": 10})), ".").await.unwrap();
+        let r = execute_tool(&tc("bash_run", json!({"command": "echo hello_test_42", "timeout": 10})), ".", false).await.unwrap();
         assert!(r.contains("hello_test_42"));
     }
 
     #[tokio::test]
     async fn test_bash_run_timeout() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "ping -n 10 127.0.0.1", "timeout": 2})), ".").await;
+        let r = execute_tool(&tc("bash_run", json!({"command": "ping -n 10 127.0.0.1", "timeout": 2})), ".", false).await;
         assert!(r.is_err() || r.unwrap().contains("timed out"));
     }
 
     #[tokio::test]
     async fn test_bash_run_failure() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "exit 1", "timeout": 5})), ".").await.unwrap();
+        let r = execute_tool(&tc("bash_run", json!({"command": "exit 1", "timeout": 5})), ".", false).await.unwrap();
         assert!(r.contains("exit code"));
     }
 
     #[tokio::test]
     async fn test_unknown_tool() {
-        let r = execute_tool(&tc("foobar", json!({})), ".").await;
+        let r = execute_tool(&tc("foobar", json!({})), ".", false).await;
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("Unknown tool"));
     }
@@ -1350,7 +1634,7 @@ mod tests {
             built_in: true,
         };
         let messages = vec![
-            ChatMessage { role: "user".into(), content: "Read Cargo.toml and tell me the package name.".into() },
+            ChatMessage { role: "user".into(), content: "Read Cargo.toml and tell me the package name.".into(), display_content: None },
         ];
         let (content, _, _) = run_react_loop_inner(&agent, &messages, "https://api.cerebras.ai/v1").await.unwrap();
         assert!(content.contains("codlib") || content.contains("package") || content.contains("name"));
@@ -1446,7 +1730,7 @@ mod tests {
                 conversation.push(assistant_msg);
 
                 for tc in &tool_calls {
-                    let result = execute_tool(tc, &workspace_root).await.unwrap_or_else(|e| format!("Error: {}", e));
+                    let result = execute_tool(None, tc, &workspace_root, false).await.unwrap_or_else(|e| format!("Error: {}", e));
                     conversation.push(serde_json::json!({
                         "role": "tool",
                         "tool_call_id": tc.id,

@@ -6,6 +6,8 @@
   let {
     cwd = "",
     onCwdChange = (_cwd: string) => {},
+    onSessionCreated = (_sessionId: string) => {},
+    initialCommand = "",
   } = $props();
 
   let prevCwd = $state(cwd);
@@ -16,7 +18,7 @@
   let activeSessionId = $state<string | null>(null);
 
   $effect(() => {
-    const unsub = activeTerminalSessionId.subscribe(val => {
+    const unsub = activeTerminalSessionId.subscribe((val) => {
       activeSessionId = val;
     });
     return unsub;
@@ -37,7 +39,10 @@
     if (cwd && cwd !== prevCwd && terminalIds.length > 0) {
       const primaryId = primaryTerminalId();
       if (primaryId && sessions[primaryId]) {
-        invoke("pty_write", { sessionId: sessions[primaryId], data: `cd "${cwd}"\n` }).catch(() => {});
+        invoke("pty_write", {
+          sessionId: sessions[primaryId],
+          data: `cd "${cwd}"\n`,
+        }).catch(() => {});
         cwds[primaryId] = cwd;
         cwds = { ...cwds };
       }
@@ -60,8 +65,9 @@
     const parts = cwd.split("\\");
     for (const p of trimmed.replace(/\//g, "\\").split("\\")) {
       if (!p || p === ".") continue;
-      if (p === "..") { if (parts.length > 1) parts.pop(); }
-      else parts.push(p);
+      if (p === "..") {
+        if (parts.length > 1) parts.pop();
+      } else parts.push(p);
     }
     return parts.join("\\");
   }
@@ -88,8 +94,20 @@
     if (terminalIds.length <= 1) return;
     terminalIds = terminalIds.filter((t) => t !== id);
   }
-  function onSessionCreated(id: string, sessionId: string) {
+  function handleSessionCreated(id: string, sessionId: string) {
     sessions[id] = sessionId;
+    sessions = { ...sessions };
+    // Notify parent (used by private terminal to mark session as restricted)
+    onSessionCreated(sessionId);
+
+    // Run initial command if it is the primary terminal session
+    if (id === primaryTerminalId() && initialCommand) {
+      setTimeout(() => {
+        invoke("pty_write", { sessionId, data: initialCommand + "\n" }).catch(
+          (e) => console.error(e),
+        );
+      }, 300);
+    }
   }
 </script>
 
@@ -97,7 +115,20 @@
   <div class="tiling-header">
     <span class="tiling-title">Terminal ({terminalIds.length})</span>
     <button class="tiling-btn" onclick={addTerminal} title="New terminal">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        ><line x1="12" y1="5" x2="12" y2="19" /><line
+          x1="5"
+          y1="12"
+          x2="19"
+          y2="12"
+        /></svg
+      >
     </button>
   </div>
   <div class="tiling-grid" style="grid-template-columns: repeat({cols}, 1fr)">
@@ -107,18 +138,61 @@
         <div class="tiling-cell-header" class:header-active={isActive}>
           <span class="tiling-cell-label" class:active={isActive}>{id}</span>
           <div class="tiling-cell-actions">
-            <button class="tiling-cell-btn" onclick={() => addTerminal()} title="Split">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            <button
+              class="tiling-cell-btn"
+              onclick={() => addTerminal()}
+              title="Split"
+            >
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                ><rect x="3" y="3" width="7" height="7" /><rect
+                  x="14"
+                  y="3"
+                  width="7"
+                  height="7"
+                /><rect x="14" y="14" width="7" height="7" /><rect
+                  x="3"
+                  y="14"
+                  width="7"
+                  height="7"
+                /></svg
+              >
             </button>
             {#if terminalIds.length > 1}
-              <button class="tiling-cell-btn" onclick={() => removeTerminal(id)} title="Close">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              <button
+                class="tiling-cell-btn"
+                onclick={() => removeTerminal(id)}
+                title="Close"
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  ><line x1="18" y1="6" x2="6" y2="18" /><line
+                    x1="6"
+                    y1="6"
+                    x2="18"
+                    y2="18"
+                  /></svg
+                >
               </button>
             {/if}
           </div>
         </div>
         <div class="tiling-cell-body">
-          <Terminal sessionId={sessions[id]} onReady={(sid: string) => onSessionCreated(id, sid)} onCommand={(sid: string, line: string) => handleCommand(id, line)} />
+          <Terminal
+            sessionId={sessions[id]}
+            onReady={(sid: string) => handleSessionCreated(id, sid)}
+            onCommand={(sid: string, line: string) => handleCommand(id, line)}
+          />
         </div>
       </div>
     {/each}
@@ -126,21 +200,90 @@
 </div>
 
 <style>
-  .tiling { display:flex; flex-direction:column; height:100%; background:var(--bg-primary); }
+  .tiling {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--glass-bg, var(--bg-secondary));
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
+  }
 
-  .tiling-header { display:flex; align-items:center; justify-content:space-between; padding:4px 10px; border-bottom:1px solid var(--border-subtle); flex-shrink:0; }
-  .tiling-title { font-size:var(--fs-11); font-weight:600; color:var(--text-muted); }
-  .tiling-btn { display:flex; align-items:center; justify-content:center; background:none; border:none; color:var(--text-muted); padding:3px; cursor:pointer; border-radius:4px; }
-  .tiling-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
+  .tiling-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+  .tiling-title {
+    font-size: var(--fs-11);
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+  .tiling-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 3px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .tiling-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
 
-  .tiling-grid { flex:1; display:grid; gap:2px; padding:2px; overflow:hidden; grid-auto-rows:1fr; }
+  .tiling-grid {
+    flex: 1;
+    display: grid;
+    gap: 2px;
+    padding: 2px;
+    overflow: hidden;
+    grid-auto-rows: 1fr;
+  }
 
-  .tiling-cell { display:flex; flex-direction:column; border:1px solid var(--border-subtle); border-radius:6px; overflow:hidden; min-height:60px; background:var(--bg-primary); transition: border-color 0.15s ease; }
-  .tiling-cell.cell-active { border-color: var(--accent-blue); }
-  .tiling-cell-header { display:flex; align-items:center; justify-content:space-between; padding:1px 8px; background:var(--bg-secondary); border-bottom:1px solid var(--border-subtle); font-size:var(--fs-10); color:var(--text-muted); user-select:none; flex-shrink:0; }
-  .tiling-cell-header.header-active { background: color-mix(in srgb, var(--accent-blue) 5%, var(--bg-secondary)); }
-  .tiling-cell-label { font-family:monospace; display:inline-flex; align-items:center; }
-  .tiling-cell-label.active { color: var(--text-primary); font-weight: 600; }
+  .tiling-cell {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    overflow: hidden;
+    min-height: 60px;
+    background: transparent;
+    transition: border-color 0.15s ease;
+  }
+  .tiling-cell.cell-active {
+    border-color: var(--accent-blue);
+  }
+  .tiling-cell-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1px 8px;
+    background: var(--glass-bg, var(--bg-secondary));
+    border-bottom: 1px solid var(--glass-border, var(--border-subtle));
+    font-size: var(--fs-10);
+    color: var(--text-muted);
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .tiling-cell-header.header-active {
+    background: color-mix(in srgb, var(--accent-blue) 5%, var(--glass-bg, var(--bg-secondary)));
+  }
+  .tiling-cell-label {
+    font-family: monospace;
+    display: inline-flex;
+    align-items: center;
+  }
+  .tiling-cell-label.active {
+    color: var(--text-primary);
+    font-weight: 600;
+  }
   .tiling-cell-label.active::before {
     content: "";
     display: inline-block;
@@ -150,8 +293,27 @@
     border-radius: 50%;
     margin-right: 6px;
   }
-  .tiling-cell-actions { display:flex; gap:1px; }
-  .tiling-cell-btn { display:flex; align-items:center; justify-content:center; background:none; border:none; color:var(--text-muted); padding:1px 3px; cursor:pointer; border-radius:3px; }
-  .tiling-cell-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
-  .tiling-cell-body { flex:1; overflow:hidden; }
+  .tiling-cell-actions {
+    display: flex;
+    gap: 1px;
+  }
+  .tiling-cell-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    padding: 1px 3px;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  .tiling-cell-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+  .tiling-cell-body {
+    flex: 1;
+    overflow: hidden;
+  }
 </style>

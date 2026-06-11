@@ -1,0 +1,10 @@
+{
+  "method": "GET",
+  "url": "https://jsonplaceholder.typicode.com/todos/1",
+  "requestBody": "",
+  "authType": "None",
+  "authToken": "",
+  "authUser": "",
+  "authPassword": "",
+  "headersList": []
+}

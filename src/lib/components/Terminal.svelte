@@ -2,13 +2,17 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { activeTerminalSessionId, type PtyOutputEvent } from "../stores.svelte";
+  import {
+    activeTerminalSessionId,
+    type PtyOutputEvent,
+  } from "../stores.svelte";
 
   let {
     sessionId = $bindable(),
     rows = 24,
     cols = 80,
     shell = undefined as string | undefined,
+    password = undefined as string | undefined,
     onReady = (_id: string) => {},
     onCommand = (_id: string, _line: string) => {},
   } = $props();
@@ -20,6 +24,7 @@
   let resizeObserver: ResizeObserver | null = null;
   let activeSessionId = $state<string | null>(null);
   let themeObserver: MutationObserver | null = null;
+  let passwordSent = $state(false);
 
   $effect(() => {
     if (sessionId) {
@@ -33,15 +38,19 @@
     const { FitAddon } = await import("xterm-addon-fit");
 
     const s = getComputedStyle(document.documentElement);
-    function c(name: string, fallback: string) { return s.getPropertyValue(name).trim() || fallback; }
+    function c(name: string, fallback: string) {
+      return s.getPropertyValue(name).trim() || fallback;
+    }
 
     terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: "block",
       fontSize: 13,
-      fontFamily: localStorage.getItem("nyxedit-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+      fontFamily:
+        localStorage.getItem("nyxedit-font") ||
+        "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
       theme: {
-        background: c("--bg-primary", "#0d0d1a"),
+        background: "rgba(0,0,0,0)",
         foreground: c("--text-primary", "#c0caf5"),
         cursor: c("--accent-blue", "#ff3366"),
         cursorAccent: c("--bg-primary", "#0d0d1a"),
@@ -89,7 +98,12 @@
 
     unlisten = await listen<PtyOutputEvent>("pty-output", (event) => {
       if (event.payload.session_id === activeSessionId) {
-        pendingData += event.payload.data;
+        const data = event.payload.data;
+        if (password && !passwordSent && /password:/i.test(data)) {
+          passwordSent = true;
+          invoke("pty_write", { sessionId: activeSessionId, data: password + "\n" });
+        }
+        pendingData += data;
         if (animationFrameId === null) {
           animationFrameId = requestAnimationFrame(flushTerminalData);
         }
@@ -107,7 +121,12 @@
     resizeObserver = new ResizeObserver(() => {
       if (resizeTimeout) clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
-        if (fitAddon && terminalEl && terminalEl.clientWidth > 0 && terminalEl.clientHeight > 0) {
+        if (
+          fitAddon &&
+          terminalEl &&
+          terminalEl.clientWidth > 0 &&
+          terminalEl.clientHeight > 0
+        ) {
           try {
             fitAddon.fit();
           } catch (e) {
@@ -121,25 +140,33 @@
 
     // Initial fit
     setTimeout(() => {
-      if (fitAddon && terminalEl && terminalEl.clientWidth > 0 && terminalEl.clientHeight > 0) {
+      if (
+        fitAddon &&
+        terminalEl &&
+        terminalEl.clientWidth > 0 &&
+        terminalEl.clientHeight > 0
+      ) {
         try {
           fitAddon.fit();
         } catch (e) {}
       }
     }, 100);
 
-
     // Live theme update when CSS variables change
     function updateTermTheme() {
       if (!terminal) return;
       const st = getComputedStyle(document.documentElement);
-      function cv(name: string, fb: string) { return st.getPropertyValue(name).trim() || fb; }
-      
-      const storedFont = localStorage.getItem("nyxedit-font") || "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
-      terminal.setOption("fontFamily", storedFont);
+      function cv(name: string, fb: string) {
+        return st.getPropertyValue(name).trim() || fb;
+      }
 
-      terminal.setOption("theme", {
-        background: cv("--bg-primary", "#0d0d1a"),
+      const storedFont =
+        localStorage.getItem("nyxedit-font") ||
+        "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
+      terminal.options.fontFamily = storedFont;
+
+      terminal.options.theme = {
+        background: "rgba(0,0,0,0)",
         foreground: cv("--text-primary", "#c0caf5"),
         cursor: cv("--accent-blue", "#ff3366"),
         cursorAccent: cv("--bg-primary", "#0d0d1a"),
@@ -160,10 +187,13 @@
         brightMagenta: cv("--accent-purple", "#a78bfa"),
         brightCyan: cv("--accent-cyan", "#22d3ee"),
         brightWhite: cv("--text-primary", "#e2e8f0"),
-      });
+      };
     }
     themeObserver = new MutationObserver(updateTermTheme);
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
 
     let currentLine = "";
     terminal.onData((data: string) => {
@@ -223,11 +253,15 @@
   }
 </script>
 
-<div 
-  class="term" 
+<div
+  class="term"
   role="presentation"
-  onclick={() => { if (activeSessionId) activeTerminalSessionId.set(activeSessionId); }} 
-  onfocusin={() => { if (activeSessionId) activeTerminalSessionId.set(activeSessionId); }}
+  onclick={() => {
+    if (activeSessionId) activeTerminalSessionId.set(activeSessionId);
+  }}
+  onfocusin={() => {
+    if (activeSessionId) activeTerminalSessionId.set(activeSessionId);
+  }}
 >
   <div bind:this={terminalEl} class="term-instance"></div>
 </div>
@@ -236,7 +270,7 @@
   .term {
     width: 100%;
     height: 100%;
-    background: var(--bg-primary);
+    background: transparent;
     border-radius: 6px;
     overflow: hidden;
     border: 1px solid var(--border-primary);

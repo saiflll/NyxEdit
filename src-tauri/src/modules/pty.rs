@@ -1,6 +1,6 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, LazyLock};
@@ -47,12 +47,15 @@ impl Drop for PtySession {
 
 pub struct PtyManager {
     pub sessions: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
+    /// Sessions marked as "private" — AI cannot write to these
+    pub private_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 impl PtyManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            private_sessions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -71,21 +74,37 @@ impl PtyManager {
             pixel_height: 0,
         };
 
-        let shell_path = shell.unwrap_or(if cfg!(target_os = "windows") {
-            "powershell.exe"
+        let mut cmd = if let Some(s) = shell {
+            let parts: Vec<&str> = s.split_whitespace().collect();
+            if !parts.is_empty() {
+                let mut cb = CommandBuilder::new(parts[0]);
+                if parts.len() > 1 {
+                    cb.args(&parts[1..]);
+                }
+                cb
+            } else {
+                CommandBuilder::new(if cfg!(target_os = "windows") {
+                    "powershell.exe"
+                } else {
+                    "/bin/bash"
+                })
+            }
         } else {
-            "/bin/bash"
-        });
-
-        let mut cmd = CommandBuilder::new(shell_path);
+            let mut cb = CommandBuilder::new(if cfg!(target_os = "windows") {
+                "powershell.exe"
+            } else {
+                "/bin/bash"
+            });
+            if cfg!(target_os = "windows") {
+                cb.args(&[
+                    "-NoExit",
+                    "-Command",
+                    r#"function prompt { $p = $ExecutionContext.SessionState.Path.CurrentLocation.Path; $h = [System.Environment]::GetFolderPath('UserProfile'); if ($p.StartsWith($h)) { $p = '~' + $p.Substring($h.Length) }; $g = ''; if (Get-Command git -ErrorAction SilentlyContinue) { $s = git branch --show-current 2>$null; if ($s) { $g = ' git:(' + $s.Trim() + ')' } }; $esc = [char]27; $green = "$esc[92m"; $blue = "$esc[94m"; $gray = "$esc[90m"; $cyan = "$esc[96m"; $yellow = "$esc[93m"; $magenta = "$esc[95m"; $reset = "$esc[0m"; $u = $env:USERNAME; "$green➜  $blue$u$reset $gray@$reset $cyan$u-pc$reset $yellow$p$reset$magenta$g$reset $green❯$reset " }"#,
+                ]);
+            }
+            cb
+        };
         cmd.env("TERM", "xterm-256color");
-        if shell_path == "powershell.exe" {
-            cmd.args(&[
-                "-NoExit",
-                "-Command",
-                r#"function prompt { $p = $ExecutionContext.SessionState.Path.CurrentLocation.Path; $h = [System.Environment]::GetFolderPath('UserProfile'); if ($p.StartsWith($h)) { $p = '~' + $p.Substring($h.Length) }; $g = ''; if (Get-Command git -ErrorAction SilentlyContinue) { $s = git branch --show-current 2>$null; if ($s) { $g = ' git:(' + $s.Trim() + ')' } }; $esc = [char]27; $green = "$esc[92m"; $blue = "$esc[94m"; $gray = "$esc[90m"; $cyan = "$esc[96m"; $yellow = "$esc[93m"; $magenta = "$esc[95m"; $reset = "$esc[0m"; $u = $env:USERNAME; "$green➜  $blue$u$reset $gray@$reset $cyan$u-pc$reset $yellow$p$reset$magenta$g$reset $green❯$reset " }"#,
-            ]);
-        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
@@ -193,6 +212,21 @@ impl PtyManager {
         let sessions = self.sessions.lock().unwrap();
         sessions.keys().cloned().collect()
     }
+
+    pub fn mark_private(&self, session_id: &str) {
+        let mut private = self.private_sessions.lock().unwrap();
+        private.insert(session_id.to_string());
+    }
+
+    pub fn unmark_private(&self, session_id: &str) {
+        let mut private = self.private_sessions.lock().unwrap();
+        private.remove(session_id);
+    }
+
+    pub fn is_private(&self, session_id: &str) -> bool {
+        let private = self.private_sessions.lock().unwrap();
+        private.contains(session_id)
+    }
 }
 
 #[tauri::command]
@@ -261,4 +295,38 @@ pub fn pty_close(
 #[tauri::command]
 pub fn pty_list(state: tauri::State<'_, PtyManager>) -> Vec<String> {
     state.list_sessions()
+}
+
+/// Mark a PTY session as "private" — AI tool calls cannot write to this session.
+#[tauri::command]
+pub fn pty_mark_private(
+    state: tauri::State<'_, PtyManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let sessions = state.sessions.lock().unwrap();
+    if !sessions.contains_key(&session_id) {
+        return Err("Session not found".to_string());
+    }
+    drop(sessions);
+    state.mark_private(&session_id);
+    Ok(())
+}
+
+/// Remove private flag from a PTY session.
+#[tauri::command]
+pub fn pty_unmark_private(
+    state: tauri::State<'_, PtyManager>,
+    session_id: String,
+) -> Result<(), String> {
+    state.unmark_private(&session_id);
+    Ok(())
+}
+
+/// Check if a session is marked as private.
+#[tauri::command]
+pub fn pty_is_private(
+    state: tauri::State<'_, PtyManager>,
+    session_id: String,
+) -> bool {
+    state.is_private(&session_id)
 }

@@ -77,3 +77,21 @@
 - **Cerebras direct API** has `gpt-oss-120b`, `zai-glm-4.7` (different from Vercel's `cerebras:llama3.1-8b`)
 - **Gemini** uses query-param auth: `?key=...`, models listed as `models/gemini-2.0-flash`
 - **Mistral direct API** uses standard OpenAI-compatible format
+
+## Progress (Sesi Ini)
+### Done
+- **add-menu z-index fix**: Moved `{#if addMenuOpen}` block out of `<header class="tab-bar">` (which has `backdrop-filter`, making it a containing block for fixed positioning). Now a direct child of `.workspace`. Uses `position: fixed; top: 38px; right: 50px; z-index: 9999`.
+- **Global glassmorphism**: Added `.workspace-area`, `.sidebar-body`, `.sidebar-workspace-content` to the global glass rule.
+- **SSHExplorer.svelte**: Complete SFTP rewrite — uses `ssh_connect` + `sftp_list_dir`, click-to-navigate, path bar, loading/error/retry.
+- **SSHTree.svelte**: Styling polish — 8px border-radius, active blue accent bar, shadow/hover, focus glow, ellipsis.
+- **Runner.svelte**: `.runner-panel` background → `transparent` for glass pass-through.
+- **Backend Database Client**: New `src-tauri/src/modules/db.rs` — 7 Tauri commands (`db_connect`, `db_disconnect`, `db_list_connections`, `db_query`, `db_list_databases`, `db_list_tables`, `db_get_columns`), sqlx + mongodb deps, registered in mod.rs + lib.rs, compiles `cargo check` with 0 errors.
+  - Compilation fixes: `do_query!` macro, `MutexGuard` Send fix via pool clone before await, `&pool` for `Executor`, `use sqlx::Column`, SQLite PRAGMA via `format!`, explicit `r.get::<T, _>(0)`.
+
+### Done (cont.)
+- **DatabaseClient.svelte**: Full sidebar + tab dual-mode component with connection list, new connection form (PostgreSQL/MySQL/SQLite/MongoDB), tree browser (databases → tables → columns), SQL query editor with results grid, `Ctrl+Enter` to run, per-connection "New Query" button that opens a tab.
+- **+page.svelte wiring**: Added `"database"` to `SidebarView` type + `activityViews` + activity bar icon (DB cylinder SVG) + `SIDEBAR_LABELS` + sidebar conditional rendering. Added `"db_query"` to `TabType` + `TAB_LABELS` + `TAB_ICONS` + `Tab.connectionId` field + tab conditional rendering. Added `openDbQueryTab` function.
+- `npm run check`: 0 errors.
+
+### Next
+- (none — Database Client is feature-complete for v1)

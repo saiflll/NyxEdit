@@ -53,7 +53,7 @@
 
   async function runnersPath(): Promise<string | null> {
     if (!currentWorkspace) return null;
-    return currentWorkspace + "/.nyxedit/runners.json";
+    return currentWorkspace + "/.nyx/runners.json";
   }
 
   async function loadRunners() {
@@ -306,7 +306,7 @@
         <label class="field">
           <span>Scope</span>
           <select bind:value={editScope}>
-            <option value="workspace" disabled={!currentWorkspace}>Workspace (.nyxedit/runners.json)</option>
+            <option value="workspace" disabled={!currentWorkspace}>Workspace (.nyx/runners.json)</option>
             <option value="universal">Universal (Global)</option>
           </select>
         </label>
@@ -352,7 +352,7 @@
 {/if}
 
 <style>
-  .runner-panel { display: flex; flex-direction: column; overflow: hidden; height: 100%; width: 100%; background: var(--bg-primary); }
+  .runner-panel { display: flex; flex-direction: column; overflow: hidden; height: 100%; width: 100%; background: transparent; }
 
   .section-header {
     display: flex;

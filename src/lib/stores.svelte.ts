@@ -39,6 +39,7 @@ export type AiToolResultEvent = {
 export type ChatMessage = {
   role: string;
   content: string;
+  display_content?: string;
 };
 
 export type ChatSession = {
@@ -86,6 +87,9 @@ export const activeTerminalSessionId = writable<string | null>(null);
 export const agents = writable<Agent[]>([]);
 export const chatMessages = writable<ChatMessage[]>([]);
 export const selectedAgent = writable<string>("coder");
+export const aiSendRequest = writable<{ content: string; files: string[]; agentId?: string } | null>(null);
+
+export const activeSshProfile = writable<any>(null);
 
 // Split terminal state
 export const splitLayout = writable<string>("horizontal"); // "horizontal" | "vertical" | "quad"

@@ -23,8 +23,14 @@
   --accent-cyan: #22d3ee;
   --accent-pink: #f472b6;
 
-  --sidebar-width: 260px;
-  --activity-bar-width: 48px;
+  --particle-0: #ff3366;
+  --particle-1: #6366f1;
+  --particle-2: #22d3ee;
+  --particle-3: #34d399;
+  --particle-4: #f472b6;
+
+  --sidebar-width: 220px;
+  --activity-bar-width: 36px;
   --header-height: 36px;
   --status-bar-height: 24px;
   --bottom-panel-height: 200px;

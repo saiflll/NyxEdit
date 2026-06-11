@@ -1,7 +1,7 @@
 mod modules;
 
 use std::sync::{Arc, Mutex};
-use modules::{ai, fs, pio, proxy, pty, secrets, sessions};
+use modules::{ai, db, fs, pio, proxy, pty, secrets, sessions, ssh};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,10 +17,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_http::init())
         .manage(pty::PtyManager::new())
         .manage(ai::AiManager::new())
         .manage(sessions::SessionsState::new())
         .manage(secrets::SecretsState::default())
+        .manage(ssh::SshManager::new())
+        .manage(db::DbManager::new())
         .manage(proxy_state)
         .setup(|app| {
             let handle = app.handle();
@@ -34,14 +37,21 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             pty::pty_list,
+            pty::pty_mark_private,
+            pty::pty_unmark_private,
+            pty::pty_is_private,
             ai::ai_chat,
             ai::ai_chat_stream,
+            ai::ai_respond_bash_permission,
+            ai::ai_respond_file_permission,
             ai::ai_list_agents,
             ai::ai_update_agent,
             ai::ai_remove_agent,
             ai::ai_list_models,
             ai::ai_get_usage,
             ai::ai_reset_usage,
+            ai::ai_set_workspace,
+            ai::ai_get_agent_logs,
             ai::ai_list_personas,
             secrets::secrets_get,
             secrets::secrets_set,
@@ -63,6 +73,8 @@ pub fn run() {
             fs::fs_stat,
             fs::fs_search_files,
             fs::fs_search_contents,
+            fs::sys_check_installed,
+            fs::ssh_list_dir,
             fs::git_get_status,
             fs::git_commit,
             fs::git_stage_file,
@@ -76,6 +88,32 @@ pub fn run() {
             fs::git_sync,
             fs::git_diff_uncommitted,
             fs::git_remote_url,
+            fs::git_log,
+            // SSH + SFTP commands
+            ssh::ssh_connect,
+            ssh::ssh_disconnect,
+            ssh::ssh_list_sessions,
+            ssh::ssh_exec,
+            ssh::sftp_list_dir,
+            ssh::sftp_read_file,
+            ssh::sftp_write_file,
+            ssh::sftp_delete,
+            ssh::sftp_mkdir,
+            ssh::sftp_rename,
+            // Database commands
+            db::db_connect,
+            db::db_disconnect,
+            db::db_list_connections,
+            db::db_query,
+            db::db_list_databases,
+            db::db_list_tables,
+            db::db_get_columns,
+            // PlatformIO commands
+            pio::pio_detect,
+            pio::pio_install,
+            pio::pio_init,
+            pio::pio_run,
+            pio::pio_list_boards,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

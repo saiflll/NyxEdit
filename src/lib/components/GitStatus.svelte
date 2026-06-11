@@ -14,6 +14,7 @@
   let gitRefreshTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   let isGeneratingAiCommit = $state(false);
   let remoteUrl = $state("");
+  let commitHistory = $state<{ hash: string; author: string; date: string; message: string }[]>([]);
 
   const MAX_DISPLAY_FILES = 100;
 
@@ -48,6 +49,7 @@
       staged = res.staged;
       if (res.branch !== "no git repo") {
         invoke<string>("git_remote_url", { repoPath: workspacePath }).then(u => remoteUrl = u).catch(() => remoteUrl = "");
+        invoke<{ hash: string; author: string; date: string; message: string }[]>("git_log", { repoPath: workspacePath, maxCount: 20 }).then(h => commitHistory = h).catch(() => commitHistory = []);
       }
     } catch (e) {
       console.error("Failed to check Git status:", e);
@@ -184,6 +186,11 @@
     }
     url = url.replace(/^https:\/\/[^@]+@/, "https://");
     window.open(url, "_blank");
+  }
+
+  function formatDate(iso: string): string {
+    try { return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+    catch { return iso.slice(0, 10); }
   }
 
   async function stageFile(file: string) {
@@ -418,6 +425,30 @@
         {/if}
       </div>
     {/if}
+
+    {#if isGitRepo && commitHistory.length > 0}
+      <div class="history-section">
+        <div class="history-header">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span>Recent Commits</span>
+        </div>
+        <div class="history-list">
+          {#each commitHistory as commit}
+            <div class="history-item">
+              <span class="history-dot"></span>
+              <div class="history-content">
+                <span class="history-msg">{commit.message}</span>
+                <span class="history-meta">
+                  <span class="history-hash" title={commit.hash}>{commit.hash.slice(0, 7)}</span>
+                  <span>{commit.author}</span>
+                  <span>{formatDate(commit.date)}</span>
+                </span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -555,4 +586,15 @@
   }
   .action-btn:hover:not(:disabled) { color:var(--text-primary); background:var(--bg-hover); }
   .action-btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+  .history-section { border-top:1px solid var(--border-subtle); padding-top:8px; }
+  .history-header { display:flex; align-items:center; gap:6px; font-size:var(--fs-10); font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+  .history-list { display:flex; flex-direction:column; gap:0; position:relative; padding-left:16px; }
+  .history-list::before { content:""; position:absolute; left:5px; top:6px; bottom:6px; width:1px; background:var(--border-subtle); }
+  .history-item { display:flex; align-items:flex-start; gap:8px; padding:4px 0; position:relative; }
+  .history-dot { width:7px; height:7px; border-radius:50%; background:var(--accent-blue); flex-shrink:0; margin-top:5px; margin-left:-12px; border:1px solid var(--bg-secondary); }
+  .history-content { display:flex; flex-direction:column; gap:1px; min-width:0; flex:1; }
+  .history-msg { font-size:var(--fs-11); color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .history-meta { display:flex; gap:8px; font-size:var(--fs-9-5); color:var(--text-muted); }
+  .history-hash { font-family:monospace; color:var(--accent-blue); font-weight:500; }
 </style>

@@ -2,8 +2,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { marked } from "marked";
-  import type { Agent, ChatMessage, ChatSession, AiToolCallEvent, AiToolResultEvent } from "../stores.svelte";
+  import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent } from "../stores.svelte";
   import { getIdleState } from "$lib/idle.svelte";
+  import { get } from "svelte/store";
+  import AIDiffViewer from "./AIDiffViewer.svelte";
 
   type AiUsage = {
     agent_id: string; agent_name: string; provider: string; model: string;
@@ -34,6 +36,12 @@
   let unlistenError: UnlistenFn | null = null;
   let unlistenToolCall: UnlistenFn | null = null;
   let unlistenToolResult: UnlistenFn | null = null;
+  let unlistenRequestPermission: UnlistenFn | null = null;
+  let unlistenRequestFilePermission: UnlistenFn | null = null;
+
+  let pendingPermission = $state<{ id: string; command: string; cwd: string } | null>(null);
+  let commandOverride = $state("");
+  let pendingFilePermission = $state<{ id: string; path: string; is_edit: boolean; diff: any[] } | null>(null);
 
   let totalCost = $derived(usageData.reduce((s, u) => s + u.total_cost, 0));
   let totalTokens = $derived(usageData.reduce((s, u) => s + u.total_input_tokens + u.total_output_tokens, 0));
@@ -70,6 +78,8 @@
     unlistenError?.(); unlistenError = null;
     unlistenToolCall?.(); unlistenToolCall = null;
     unlistenToolResult?.(); unlistenToolResult = null;
+    unlistenRequestPermission?.(); unlistenRequestPermission = null;
+    unlistenRequestFilePermission?.(); unlistenRequestFilePermission = null;
   }
 
   async function saveCurrentSession() {
@@ -140,6 +150,15 @@
       toolCalls = new Map(toolCalls).set(tc.id, { name: tc.name, args: JSON.stringify(tc.arguments, null, 2), result: "..." });
     });
 
+    unlistenRequestPermission = await listen<{ id: string; command: string; cwd: string }>("ai:request_tool_permission", (e) => {
+      pendingPermission = e.payload;
+      commandOverride = e.payload.command;
+    });
+
+    unlistenRequestFilePermission = await listen<any>("ai:request_file_permission", (e) => {
+      pendingFilePermission = e.payload;
+    });
+
     unlistenToolResult = await listen<AiToolResultEvent>("ai:tool_result", (e) => {
       const tr = e.payload;
       const existing = toolCalls.get(tr.id);
@@ -180,17 +199,68 @@
     });
 
     const chatMessages = messages.slice(0, -1).map((m) => ({ role: m.role, content: m.content }));
-    await invoke("ai_chat_stream", { agentId, messages: chatMessages });
+    const workspaceRoot = get(currentDir) || "";
+    const activeSession = get(activeTerminalSessionId);
+    await invoke("ai_chat_stream", {
+      agentId,
+      messages: chatMessages,
+      workspaceRoot: workspaceRoot || null,
+      activeSessionId: activeSession || null
+    });
   }
 
-  async function sendMessage() {
-    if (!input.trim() || isStreaming) return;
+  async function sendMessage(text: string = "", files: string[] = []) {
+    const promptText = text || input;
+    if (!promptText.trim() || isStreaming) return;
     const idle = getIdleState();
     if (idle.isIdle) {
       idle.setActive();
       messages = [...messages, { role: "assistant", content: "_App was idle. Woke up to process your request._" }];
     }
-    const userMsg: ChatMessage = { role: "user", content: input };
+
+    // Read global custom instructions & skills from localStorage
+    const globalInstructions = localStorage.getItem("nyxedit-global-instructions") || "";
+    const skillRead = localStorage.getItem("nyxedit-skill-read") !== "false";
+    const skillWrite = localStorage.getItem("nyxedit-skill-write") !== "false";
+    const skillTerminal = localStorage.getItem("nyxedit-skill-terminal") !== "false";
+
+    let contextPrefix = "";
+    if (globalInstructions.trim()) {
+      contextPrefix += `[Global Custom Instructions]\n${globalInstructions.trim()}\n\n`;
+    }
+    contextPrefix += `[Agent Skills Toggles]\n`;
+    contextPrefix += `- Reading Files: ${skillRead ? "ENABLED" : "DISABLED (Do not use read_file, glob, grep, list_directory. Inform user if requested)"}\n`;
+    contextPrefix += `- Writing/Editing Files: ${skillWrite ? "ENABLED" : "DISABLED (Do not use write_file, edit. Inform user if requested)"}\n`;
+    contextPrefix += `- Terminal Command Execution: ${skillTerminal ? "ENABLED" : "DISABLED (Do not use bash_run. Inform user if requested)"}\n\n`;
+
+    const activeFilePath = get(activeFile);
+    const activeFileVal = get(fileContent);
+    if (activeFilePath && activeFileVal) {
+      contextPrefix += `[Active Editor Context - File: ${activeFilePath}]\n\`\`\`\n${activeFileVal}\n\`\`\`\n\n`;
+    }
+
+    let finalContent = contextPrefix + promptText;
+    if (files && files.length > 0) {
+      let fileContexts = [];
+      for (const file of files) {
+        try {
+          const content = await invoke<string>("fs_read_file", { path: file });
+          fileContexts.push(`\n\n---\n[Attached File: ${file}]\n${content}\n---`);
+        } catch {
+          fileContexts.push(`\n\n---\n[Attached File Reference: ${file} (Failed to read)]\n---`);
+        }
+      }
+      finalContent = finalContent + "\n" + fileContexts.join("\n");
+    }
+
+    const displayLabel = files && files.length > 0
+      ? `${promptText}\n\n📎 Attached files:\n` + files.map(f => ` - ${f.split(/[\\/]/).pop()}`).join("\n")
+      : promptText;
+    const userMsg: ChatMessage = {
+      role: "user",
+      content: finalContent,
+      display_content: displayLabel
+    };
     messages = [...messages, userMsg];
     input = "";
     isStreaming = true;
@@ -227,6 +297,34 @@
     try { return marked.parse(content) as string; } catch { return content; }
   }
   function clearChat() { messages = []; currentSessionId = null; }
+
+  async function respondPermission(approved: boolean) {
+    if (!pendingPermission) return;
+    try {
+      await invoke("ai_respond_bash_permission", {
+        id: pendingPermission.id,
+        approved,
+        modifiedCommand: approved ? commandOverride : null
+      });
+    } catch (e) {
+      console.error("Failed to respond to permission request:", e);
+    }
+    pendingPermission = null;
+    commandOverride = "";
+  }
+
+  async function respondFilePermission(approved: boolean) {
+    if (!pendingFilePermission) return;
+    try {
+      await invoke("ai_respond_file_permission", {
+        id: pendingFilePermission.id,
+        approved
+      });
+    } catch (e) {
+      console.error("Failed to respond to file permission request:", e);
+    }
+    pendingFilePermission = null;
+  }
 
   let copiedMsgIndex = $state<number | null>(null);
   async function copyMessage(content: string, index: number) {
@@ -266,6 +364,30 @@
       if (sentinel) observer.observe(sentinel);
       return () => observer.disconnect();
     }
+  });
+
+  $effect(() => {
+    const unsub = aiSendRequest.subscribe(async (req) => {
+      if (req) {
+        const text = req.content;
+        const files = req.files || [];
+        const agentId = req.agentId;
+        aiSendRequest.set(null);
+        if (agentId) {
+          if (agentId === "auto") {
+            selectedMode = "auto";
+            if (agents.length > 0) {
+              selectedAgentId = agents[0].id;
+            }
+          } else {
+            selectedMode = agentId;
+            selectedAgentId = agentId;
+          }
+        }
+        await sendMessage(text, files);
+      }
+    });
+    return unsub;
   });
 
   $effect(() => {
@@ -351,28 +473,32 @@
           </div>
           <div class="msg-text" class:streaming={isStreaming && msg === messages[messages.length - 1] && msg.role === "assistant"}>
             {#if msg.role === "assistant"}
-              {#if isStreaming && msg === messages[messages.length - 1] && msg.content === ""}
-                <div class="tool-calls">
-                  {#each Array.from(toolCalls.entries()) as [id, tc]}
-                    <div class="tool-call-item">
-                      <span class="tool-call-name">{tc.name}</span>
-                      <pre class="tool-call-args">{tc.args}</pre>
-                      {#if tc.result !== "..."}
-                        <pre class="tool-call-result">{tc.result}</pre>
-                      {:else}
-                        <span class="tool-call-pending">Executing...</span>
-                      {/if}
-                    </div>
-                  {/each}
-                  {#if toolCalls.size === 0}
-                    <span class="thinking-text">Thinking<span class="dots"><span>.</span><span>.</span><span>.</span></span></span>
-                  {/if}
-                </div>
+              {#if isStreaming && msg === messages[messages.length - 1]}
+                {#if toolCalls.size > 0}
+                  <div class="tool-calls">
+                    {#each Array.from(toolCalls.entries()) as [id, tc]}
+                      <div class="tool-call-item">
+                        <span class="tool-call-name">{tc.name}</span>
+                        <pre class="tool-call-args">{tc.args}</pre>
+                        {#if tc.result !== "..."}
+                          <pre class="tool-call-result">{tc.result}</pre>
+                        {:else}
+                          <span class="tool-call-pending">Executing...</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                {#if msg.content}
+                  <div class="md-content">{@html markedParse(msg.content)}</div>
+                {:else if toolCalls.size === 0}
+                  <span class="thinking-text">Thinking<span class="dots"><span>.</span><span>.</span><span>.</span></span></span>
+                {/if}
               {:else}
                 <div class="md-content">{@html markedParse(msg.content)}</div>
               {/if}
             {:else}
-              {msg.content}
+              {msg.display_content || msg.content}
             {/if}
           </div>
         </div>
@@ -387,12 +513,42 @@
       </button>
     {/if}
 
-    <div class="ai-input">
-      <textarea bind:value={input} placeholder="Type a message..." onkeydown={handleKeydown} rows={2}></textarea>
-      <button class="ai-btn ai-btn-send" onclick={sendMessage} disabled={!input.trim() || isStreaming}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-      </button>
-    </div>
+    {#if pendingPermission}
+      <div class="permission-panel">
+        <div class="permission-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-yellow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <span class="permission-title">Execute Command?</span>
+        </div>
+        <div class="permission-desc">
+          Agent wants to run command in <span class="cwd-tag">{pendingPermission.cwd || "workspace root"}</span>:
+        </div>
+        <div class="command-box">
+          <textarea bind:value={commandOverride} class="command-editor" rows={3}></textarea>
+        </div>
+        <div class="permission-actions">
+          <button class="perm-btn perm-reject" onclick={() => respondPermission(false)}>Reject</button>
+          <button class="perm-btn perm-accept" onclick={() => respondPermission(true)}>Accept & Run</button>
+        </div>
+      </div>
+    {/if}
+
+    {#if pendingFilePermission}
+      <div class="permission-panel">
+        <div class="permission-header">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"/></svg>
+          <span class="permission-title">{pendingFilePermission.is_edit ? "Approve Edit?" : "Approve Write File?"}</span>
+        </div>
+        <div class="permission-desc">
+          Agent wants to {pendingFilePermission.is_edit ? "edit" : "create"} file:
+        </div>
+        <AIDiffViewer path={pendingFilePermission.path} isEdit={pendingFilePermission.is_edit} diff={pendingFilePermission.diff} />
+        <div class="permission-actions">
+          <button class="perm-btn perm-reject" onclick={() => respondFilePermission(false)}>Reject</button>
+          <button class="perm-btn perm-accept" onclick={() => respondFilePermission(true)}>Accept & Write</button>
+        </div>
+      </div>
+    {/if}
+
   </div>
 </div>
 
@@ -476,4 +632,51 @@
   .md-content a:hover { text-decoration:underline; }
   .md-content img { max-width:100%; border-radius:4px; margin:4px 0; }
   .md-content hr { border:none; border-top:1px solid var(--border-subtle); margin:8px 0; }
+
+  .permission-panel {
+    margin: 8px 10px;
+    padding: 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    animation: slideUp 0.2s ease;
+  }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .permission-header { display: flex; align-items: center; gap: 6px; }
+  .permission-title { font-weight: 600; font-size: var(--fs-11); color: var(--text-primary); }
+  .permission-desc { font-size: var(--fs-10); color: var(--text-muted); }
+  .cwd-tag { font-family: monospace; background: var(--bg-hover); padding: 1px 4px; border-radius: 3px; color: var(--accent-cyan); }
+  .command-box { width: 100%; }
+  .command-editor {
+    width: 100%;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 6px;
+    font-family: monospace;
+    font-size: var(--fs-10);
+    resize: none;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .command-editor:focus { border-color: var(--accent-blue); }
+  .permission-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+  .perm-btn {
+    border: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: var(--fs-10);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+  .perm-reject { background: var(--bg-hover); color: var(--text-primary); }
+  .perm-reject:hover { background: var(--accent-red); color: var(--bg-primary); }
+  .perm-accept { background: var(--accent-blue); color: var(--bg-primary); }
+  .perm-accept:hover { filter: brightness(1.15); }
 </style>

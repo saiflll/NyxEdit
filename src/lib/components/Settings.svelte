@@ -13,6 +13,77 @@
     { id: "ollama", name: "Ollama (Local)", needsApiKey: false, defaultUrl: "http://localhost:11434/v1" },
   ];
   // ─── Agent state ──────────────────────────────
+  import { loadNyxConfig, saveNyxConfig } from "$lib/nyxConfig";
+  import { currentDir, addToast } from "../stores.svelte";
+
+  let globalInstructions = $state("");
+  let skillRead = $state(true);
+  let skillWrite = $state(true);
+  let skillTerminal = $state(true);
+  let workspaceDir = $state("");
+  let savedStatus = $state("");
+
+  $effect(() => {
+    const unsub = currentDir.subscribe(val => {
+      workspaceDir = val;
+      loadGlobalSettings();
+    });
+    return unsub;
+  });
+
+  async function loadGlobalSettings() {
+    try {
+      if (workspaceDir) {
+        const config = await loadNyxConfig("style_coding.json", {
+          globalInstructions: "",
+          skillRead: true,
+          skillWrite: true,
+          skillTerminal: true
+        });
+        globalInstructions = config.globalInstructions ?? "";
+        skillRead = config.skillRead ?? true;
+        skillWrite = config.skillWrite ?? true;
+        skillTerminal = config.skillTerminal ?? true;
+      } else {
+        globalInstructions = localStorage.getItem("nyxedit-global-instructions") || "";
+        skillRead = localStorage.getItem("nyxedit-skill-read") !== "false";
+        skillWrite = localStorage.getItem("nyxedit-skill-write") !== "false";
+        skillTerminal = localStorage.getItem("nyxedit-skill-terminal") !== "false";
+      }
+    } catch {
+      globalInstructions = localStorage.getItem("nyxedit-global-instructions") || "";
+      skillRead = localStorage.getItem("nyxedit-skill-read") !== "false";
+      skillWrite = localStorage.getItem("nyxedit-skill-write") !== "false";
+      skillTerminal = localStorage.getItem("nyxedit-skill-terminal") !== "false";
+    }
+  }
+
+  async function saveGlobalSettings() {
+    try {
+      localStorage.setItem("nyxedit-global-instructions", globalInstructions);
+      localStorage.setItem("nyxedit-skill-read", String(skillRead));
+      localStorage.setItem("nyxedit-skill-write", String(skillWrite));
+      localStorage.setItem("nyxedit-skill-terminal", String(skillTerminal));
+
+      if (workspaceDir) {
+        await saveNyxConfig("style_coding.json", {
+          globalInstructions,
+          skillRead,
+          skillWrite,
+          skillTerminal
+        });
+      }
+      savedStatus = "Saved successfully!";
+      addToast("Coding style settings saved", "success");
+      setTimeout(() => {
+        savedStatus = "";
+      }, 2500);
+    } catch (e) {
+      console.error("Save global settings error:", e);
+      addToast("Failed to save settings", "error");
+    }
+  }
+
   let agents = $state<Agent[]>([]);
   let personas = $state<AgentPersona[]>([]);
   let editingId = $state<string | null>(null);
@@ -180,6 +251,47 @@
     sharedApplyFontSize(val);
   }
 
+  let bgImage = $state(localStorage.getItem("nyxedit-bg-image") || "");
+  let bgGradient = $state(localStorage.getItem("nyxedit-bg-gradient") || "");
+  let bgBlur = $state(parseInt(localStorage.getItem("nyxedit-bg-blur") || "12", 10));
+  let bgOpacity = $state(parseFloat(localStorage.getItem("nyxedit-bg-opacity") || "0.75"));
+
+  function updateBg() {
+    const root = document.documentElement;
+    if (bgImage.trim()) {
+      root.style.setProperty("--app-bg-image", `url('${bgImage.trim()}')`);
+    } else {
+      root.style.removeProperty("--app-bg-image");
+    }
+
+    if (bgGradient.trim()) {
+      root.style.setProperty("--app-bg-gradient", bgGradient.trim());
+    } else {
+      root.style.removeProperty("--app-bg-gradient");
+    }
+
+    root.style.setProperty("--glass-blur", `${bgBlur}px`);
+    root.style.setProperty("--glass-opacity", `${bgOpacity}`);
+    
+    // Compute transparent bg color for glass effect based on theme
+    const isLightTheme = currentTheme === "light";
+    const baseColor = isLightTheme ? "255, 255, 255" : "15, 15, 25";
+    root.style.setProperty("--glass-bg", `rgba(${baseColor}, ${bgOpacity})`);
+
+    localStorage.setItem("nyxedit-bg-image", bgImage);
+    localStorage.setItem("nyxedit-bg-gradient", bgGradient);
+    localStorage.setItem("nyxedit-bg-blur", String(bgBlur));
+    localStorage.setItem("nyxedit-bg-opacity", String(bgOpacity));
+  }
+
+  function resetBg() {
+    bgImage = "";
+    bgGradient = "";
+    bgBlur = 12;
+    bgOpacity = 0.75;
+    updateBg();
+  }
+
   import { activeTerminalSessionId } from "../stores.svelte";
 
   let activeTermId = $state<string | null>(null);
@@ -306,7 +418,18 @@
     { id: "terminal", name: "Toggle Active Terminal", description: "Activate or focus the main terminal panel", binding: { ctrl: true, alt: false, shift: false, key: "j" } },
     { id: "ai", name: "Toggle Floating AI Chat", description: "Toggle the bottom-right AI Assistant chat box", binding: { ctrl: true, alt: true, shift: false, key: "a" } },
     { id: "runner", name: "Toggle Runner Panel", description: "Toggle the bottom-right script/command runner panel", binding: { ctrl: true, alt: true, shift: false, key: "n" } },
+    { id: "closeTab", name: "Close Active Tab", description: "Close the currently active editor or terminal tab", binding: { ctrl: true, alt: false, shift: false, key: "w" } },
+    { id: "commandPalette", name: "Command Palette", description: "Open the command palette", binding: { ctrl: true, alt: false, shift: true, key: "p" } },
+    { id: "searchFiles", name: "Search in Files", description: "Toggle the search sidebar panel", binding: { ctrl: true, alt: false, shift: true, key: "f" } },
   ];
+
+  const aboutParticles = Array.from({ length: 16 }, (_, i) => ({
+    x: ((i * 31 + 7) % 100) / 100,
+    y: ((i * 47 + 11) % 100) / 100,
+    s: 0.4 + ((i * 7) % 4) * 0.2,
+    d: 4 + (i % 5) * 0.7,
+    c: `var(--particle-${i % 5})`,
+  }));
 
   let shortcuts = $state<ShortcutBinding[]>(loadShortcuts());
   let shortcutSearch = $state("");
@@ -388,8 +511,10 @@
   $effect(() => {
     loadAgents();
     loadPersonas();
+    loadGlobalSettings();
     applyTheme(currentTheme);
     applyFont(currentFont);
+    updateBg();
   });
 
   $effect(() => {
@@ -468,6 +593,29 @@
         />
         <span class="fontsize-label">{currentFontSize}px</span>
       </div>
+
+      <div class="section-title">Custom Backdrop & Glassmorphism</div>
+      <div class="bg-section">
+        <label class="form-field" style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;">
+          <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-secondary);">Background Image URL</span>
+          <input type="text" bind:value={bgImage} oninput={updateBg} placeholder="https://example.com/image.jpg" class="form-input" style="background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 4px 6px; font-size: var(--fs-11); width: 100%; outline: none;" />
+        </label>
+        <label class="form-field" style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;">
+          <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-secondary);">Gradient Background CSS</span>
+          <input type="text" bind:value={bgGradient} oninput={updateBg} placeholder="linear-gradient(135deg, #0d0d2b 0%, #1a1a3a 100%)" class="form-input" style="background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 4px 6px; font-size: var(--fs-11); width: 100%; outline: none;" />
+        </label>
+        <div class="form-row-grid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 8px;">
+          <label class="form-field" style="display: flex; flex-direction: column; gap: 4px;">
+            <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-muted);">Backdrop Blur ({bgBlur}px)</span>
+            <input type="range" min="0" max="40" step="1" bind:value={bgBlur} oninput={updateBg} class="fontsize-slider" style="width: 100%;" />
+          </label>
+          <label class="form-field" style="display: flex; flex-direction: column; gap: 4px;">
+            <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-muted);">Backdrop Opacity ({(bgOpacity * 100).toFixed(0)}%)</span>
+            <input type="range" min="0.1" max="1.0" step="0.05" bind:value={bgOpacity} oninput={updateBg} class="fontsize-slider" style="width: 100%;" />
+          </label>
+        </div>
+        <button class="settings-btn settings-btn-cancel" onclick={resetBg} style="margin-top: 14px; align-self: flex-start;">Reset Backdrop</button>
+      </div>
     </div>
 
   <!-- ═══ Agent Tab ═══ -->
@@ -481,12 +629,54 @@
         </button>
       </div>
 
+      <div class="global-agent-settings" style="margin-bottom: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+        <label class="form-field form-field-full" style="display: flex; flex-direction: column; gap: 4px;">
+          <span style="font-weight: 600; color: var(--text-secondary);">Global Custom Instructions</span>
+          <textarea bind:value={globalInstructions} rows={3} placeholder="Add custom behavior instructions for all AI models (e.g. 'Always answer in Indonesian', 'Prefer modern ES6 syntax')..." style="background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px; resize: none; font-size: var(--fs-11);"></textarea>
+        </label>
+        
+        <div class="skills-section" style="display: flex; flex-direction: column; gap: 6px;">
+          <span style="font-weight: 600; color: var(--text-secondary);">AI Agent Skills (Toggles)</span>
+          <div class="skills-grid" style="display: flex; flex-wrap: wrap; gap: 15px;">
+            <label class="checkbox-container" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" bind:checked={skillRead} style="cursor: pointer;" />
+              <span class="checkmark"></span>
+              Allow Reading Files
+            </label>
+            <label class="checkbox-container" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" bind:checked={skillWrite} style="cursor: pointer;" />
+              <span class="checkmark"></span>
+              Allow Writing/Modifying Files
+            </label>
+            <label class="checkbox-container" style="display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" bind:checked={skillTerminal} style="cursor: pointer;" />
+              <span class="checkmark"></span>
+              Allow Terminal Execution
+            </label>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; border-top: 1px solid var(--border-subtle); padding-top: 8px;">
+          {#if savedStatus}
+            <span style="color: var(--accent-green); font-size: var(--fs-10); font-weight: 600;">{savedStatus}</span>
+          {:else}
+            <span></span>
+          {/if}
+          <button 
+            onclick={saveGlobalSettings} 
+            style="padding: 6px 14px; background: var(--accent-blue); color: var(--bg-primary); border: none; border-radius: 6px; font-size: var(--fs-10); font-weight: 600; cursor: pointer; transition: all 0.12s ease;"
+          >
+            Save Settings
+          </button>
+        </div>
+      </div>
+
       {#if showForm}
         <div class="settings-form">
           <div class="agent-form-grid">
             <label class="form-field">
               <span>Persona</span>
-              <select bind:value={formPersonaId} onchange={onPersonaChange} disabled={editingId !== null && agents.find(a => a.id === editingId)?.built_in}>
+              <select bind:value={formPersonaId} onchange={onPersonaChange}>
                 <option value="">None (manual)</option>
                 {#each personas as p}
                   <option value={p.id}>{p.name} — {p.description}</option>
@@ -794,7 +984,15 @@
       <div class="settings-header">
         <span class="settings-title">About</span>
       </div>
-      <div class="about-content">
+      <div class="about-content" style="position:relative; overflow:hidden;">
+        <div class="about-particles" aria-hidden="true">
+          {#each aboutParticles as p}
+            <span
+              class="about-particle"
+              style="left:{p.x * 100}%; top:{p.y * 100}%; width:{p.s}rem; height:{p.s}rem; animation-duration:{p.d}s; background:{p.c}; color:{p.c};"
+            ></span>
+          {/each}
+        </div>
         <div class="about-hero">
           <div class="about-logo">
             <img src="/nyx_logo.png" alt="NyxEdit Logo" class="about-logo-img" />
@@ -1173,13 +1371,14 @@
 
   /* About */
   .about-section { display:flex; flex-direction:column; flex:1; overflow:hidden; }
-  .about-content { display:flex; flex-direction:column; flex:1; overflow-y:auto; padding:16px 20px; gap:16px; }
-  .about-hero { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
+  .about-content { position:relative; display:flex; flex-direction:column; flex:1; overflow-y:auto; padding:16px 20px; gap:16px; }
+  .about-hero { position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
   .about-logo { opacity:1; display:flex; align-items:center; justify-content:center; }
   .about-logo-img { width:72px; height:72px; border-radius:14px; object-fit:contain; box-shadow:0 0 24px rgba(0,224,255,0.35), 0 0 8px rgba(129,140,248,0.2); }
   .about-name { font-size:var(--fs-22); font-weight:700; color:var(--text-primary); margin:0; }
   .about-version { font-size:var(--font-size); color:var(--text-muted); font-family:monospace; }
   .about-desc { font-size:var(--font-size); color:var(--text-secondary); max-width:360px; line-height:1.5; }
+  .about-info { position:relative; z-index:1; }
   .about-section-title { font-size:var(--fs-10); font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.8px; margin-bottom:8px; }
   .about-tag-row { display:flex; flex-wrap:wrap; gap:6px; }
   .about-tag { font-size:var(--fs-10); padding:3px 10px; background:color-mix(in srgb, var(--accent-blue) 10%, transparent); color:var(--accent-blue); border:1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent); border-radius:10px; font-family:monospace; }
@@ -1188,5 +1387,24 @@
   .about-repo { display:flex; align-items:center; gap:6px; font-size:var(--fs-11); color:var(--text-secondary); }
   .about-repo a { color:var(--accent-blue); text-decoration:none; }
   .about-repo a:hover { text-decoration:underline; }
+  .about-particles { position:absolute; inset:0; pointer-events:none; z-index:0; overflow:hidden; }
+  .about-particle {
+    position:absolute; border-radius:50%;
+    animation-name: about-float;
+    animation-duration: 4s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
+    animation-direction: alternate;
+    opacity:0.45;
+    box-shadow:0 0 4px currentColor;
+    color:inherit;
+  }
+  @keyframes about-float {
+    0% { transform:translateY(0) translateX(0) scale(1); opacity:0.3; }
+    100% { transform:translateY(-8px) translateX(4px) scale(1.2); opacity:0.6; }
+  }
   .about-footer { margin-top:auto; text-align:center; font-size:var(--fs-10); color:var(--text-muted); padding-top:16px; }
+
+  /* Backdrop Settings styles */
+  .bg-section { display:flex; flex-direction:column; gap:8px; padding:8px 0; max-width:480px; }
 </style>

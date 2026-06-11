@@ -18,6 +18,68 @@ pub struct PioResult {
 
 /// Try to find a working way to execute PlatformIO commands.
 /// Returns (executable, base_args) or None if not found.
+fn find_python_on_windows() -> Option<String> {
+    if cfg!(target_os = "windows") {
+        // 1. Check if "python" in PATH works
+        if let Ok(output) = Command::new("python").arg("--version").output() {
+            if output.status.success() {
+                return Some("python".to_string());
+            }
+        }
+        // 2. Look in AppData\Local\Programs\Python\Python3*
+        if let Ok(user_profile) = std::env::var("USERPROFILE") {
+            let python_dir = format!("{}\\AppData\\Local\\Programs\\Python", user_profile);
+            if let Ok(entries) = std::fs::read_dir(&python_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let exe_path = path.join("python.exe");
+                        if exe_path.exists() {
+                            return Some(exe_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // 3. Look in Program Files
+        for program_files in &["C:\\Program Files", "C:\\Program Files (x86)"] {
+            if let Ok(entries) = std::fs::read_dir(program_files) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("Python3") {
+                        let exe_path = entry.path().join("python.exe");
+                        if exe_path.exists() {
+                            return Some(exe_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_python_cmd() -> String {
+    for py in &["python", "python3", "py"] {
+        if let Ok(output) = Command::new(py).arg("--version").output() {
+            if output.status.success() {
+                let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let ver = if !stdout_str.is_empty() { stdout_str } else { stderr_str };
+                if !ver.is_empty() {
+                    return py.to_string();
+                }
+            }
+        }
+    }
+    if cfg!(target_os = "windows") {
+        if let Some(path) = find_python_on_windows() {
+            return path;
+        }
+    }
+    "python".to_string()
+}
+
 fn find_pio() -> Option<(String, Vec<String>)> {
     // 1. Try direct `pio` binary via PATH
     if let Ok(output) = Command::new("pio").arg("--version").output() {
@@ -33,15 +95,14 @@ fn find_pio() -> Option<(String, Vec<String>)> {
         }
     }
 
-    // 3. Try `python -m platformio` (common on Windows after pip install)
-    for py in &["python", "python3", "py"] {
-        if let Ok(output) = Command::new(py)
-            .args(["-m", "platformio", "--version"])
-            .output()
-        {
-            if output.status.success() {
-                return Some((py.to_string(), vec!["-m".to_string(), "platformio".to_string()]));
-            }
+    // 3. Try `python -m platformio` using the detected python cmd
+    let py = get_python_cmd();
+    if let Ok(output) = Command::new(&py)
+        .args(["-m", "platformio", "--version"])
+        .output()
+    {
+        if output.status.success() {
+            return Some((py, vec!["-m".to_string(), "platformio".to_string()]));
         }
     }
 
@@ -88,12 +149,13 @@ pub fn pio_detect() -> Result<PioStatus, String> {
     }
 
     // Check python version (needed for pip install)
-    for py in &["python", "python3", "py"] {
-        if let Ok(output) = Command::new(py).arg("--version").output() {
-            if output.status.success() {
-                status.python = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
-                break;
-            }
+    let py = get_python_cmd();
+    if let Ok(output) = Command::new(&py).arg("--version").output() {
+        let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let ver = if !stdout_str.is_empty() { stdout_str } else { stderr_str };
+        if !ver.is_empty() {
+            status.python = Some(ver);
         }
     }
 
@@ -102,10 +164,10 @@ pub fn pio_detect() -> Result<PioStatus, String> {
 
 #[tauri::command]
 pub fn pio_install() -> Result<PioResult, String> {
-    let pip_cmd = if cfg!(target_os = "windows") { "pip" } else { "pip3" };
+    let py = get_python_cmd();
 
-    let result = Command::new(pip_cmd)
-        .args(["install", "platformio"])
+    let result = Command::new(&py)
+        .args(["-m", "pip", "install", "platformio"])
         .output()
         .map_err(|e| format!("Failed to run pip: {}", e))?;
 

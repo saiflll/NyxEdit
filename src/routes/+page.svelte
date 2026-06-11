@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { open as openShell } from "@tauri-apps/plugin-shell";
   import SplitTerminal from "$lib/components/SplitTerminal.svelte";
@@ -15,14 +16,21 @@
   import ContextMenu from "$lib/components/ContextMenu.svelte";
   import SearchInFiles from "$lib/components/SearchInFiles.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
-  import { currentDir, addToast, type Agent } from "$lib/stores.svelte";
+  import AIFloatingBar from "$lib/components/AIFloatingBar.svelte";
+  import SSHTree from "$lib/components/SSHTree.svelte";
+  import SSHSession from "$lib/components/SSHSession.svelte";
+  import PostmanClient from "$lib/components/PostmanClient.svelte";
+  import MQTTClient from "$lib/components/MQTTClient.svelte";
+  import DatabaseClient from "$lib/components/DatabaseClient.svelte";
+  import SSHExplorer from "$lib/components/SSHExplorer.svelte";
+  import { currentDir, addToast, aiSendRequest, activeSshProfile, type Agent } from "$lib/stores.svelte";
   import { onMount } from "svelte";
   import { getStoredTheme, getStoredFont, applyTheme, applyFont } from "$lib/themes";
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
   import { initIdle } from "$lib/idle.svelte";
 
-  type TabType = "file" | "settings" | "setup" | "terminal" | "preview";
-  type SidebarView = "files" | "search" | "git" | "platformio" | "extensions" | null;
+  type TabType = "file" | "settings" | "setup" | "terminal" | "preview" | "ssh_session" | "private" | "api_client" | "db_query";
+  type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | null;
 
   let proxyPort = $state(0);
 
@@ -31,15 +39,53 @@
   ]);
   let activeTabId = $state("tab-term");
 
+  // Track private terminal session IDs (AI cannot write to these)
+  let privateSessionIds = $state<Set<string>>(new Set());
+
   type Tab = {
     id: string; type: TabType; label: string;
     filePath?: string; fileContent?: string; previewUrl?: string;
     isNew?: boolean; isDirty?: boolean;
+    sshProfile?: any; // for ssh_session tabs
+    requestId?: string; // for api_client tabs
+    initialCommand?: string; // for terminal tabs
+    connectionId?: string; // for db_query tabs
   };
 
   // ─── Sidebar ───────────────────────────────────
   let sidebarView = $state<SidebarView>("files");
-  let sidebarWidth = $state(260);
+  let workspaceMode = $state<"explorer" | "git" | "ssh_explorer">("explorer");
+  let sidebarWidth = $state(220);
+
+  let activityViews = $state<("files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database")[]>([
+    "files",
+    "search",
+    "ssh",
+    "postman",
+    "mqtt",
+    "platformio",
+    "extensions",
+    "database"
+  ]);
+  let dragIconIndex = $state<number | null>(null);
+
+  function handleIconDragStart(index: number) {
+    dragIconIndex = index;
+  }
+  function handleIconDrop(index: number) {
+    if (dragIconIndex === null || dragIconIndex === index) return;
+    const views = [...activityViews];
+    const draggedItem = views.splice(dragIconIndex, 1)[0];
+    views.splice(index, 0, draggedItem);
+    activityViews = views;
+    dragIconIndex = null;
+    try {
+      localStorage.setItem("codlib-activity-order", JSON.stringify(views));
+    } catch {}
+  }
+  function handleIconDragOver(e: DragEvent) {
+    e.preventDefault();
+  }
 
   // ─── Floating Panels ──────────────────────────
   let showFloatingAi = $state(false);
@@ -89,10 +135,13 @@
       : pioBoards.slice(0, MAX_PIO_BOARDS)
   );
 
-  async function checkPio() {
+  let hasCheckedPio = false;
+  async function checkPio(force = false) {
+    if (hasCheckedPio && !force) return;
     try {
       const s = await invoke<PioStatus>("pio_detect");
       pioStatus = s;
+      hasCheckedPio = true;
       if (s.installed) {
         addLog(`PlatformIO detected: ${s.version}`);
         if (pioBoards.length === 0) {
@@ -233,7 +282,7 @@
     if (!url.trim()) return;
     extBusy = true; extMsg = "Fetching...";
     try {
-      const res = await fetch(url.trim());
+      const res = await tauriFetch(url.trim());
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (!data.name) throw new Error("Invalid extension format: missing 'name'");
@@ -297,6 +346,9 @@
   const TAB_LABELS: Record<TabType, string> = {
     file: "Untitled", settings: "Settings", setup: "Setup",
     terminal: "Terminal", preview: "Preview",
+    ssh_session: "SSH", private: "Private",
+    api_client: "API Client",
+    db_query: "DB Query",
   };
   const TAB_ICONS: Record<TabType, string> = {
     file: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
@@ -304,6 +356,10 @@
     setup: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`,
     terminal: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
     preview: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`,
+    ssh_session: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="4"/><line x1="6" y1="6" x2="18" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="18" x2="18" y2="18"/></svg>`,
+    private: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+    api_client: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+    db_query: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   };
 
   function normalizeUrl(url: string): string {
@@ -413,7 +469,87 @@
     applyFont(getStoredFont());
     initIdle();
     try { proxyPort = await invoke<number>("get_proxy_port"); } catch {}
+    try {
+      const saved = localStorage.getItem("codlib-activity-order");
+      if (saved) {
+        activityViews = JSON.parse(saved);
+      }
+    } catch {}
   });
+
+  $effect(() => {
+    const unsub = aiSendRequest.subscribe(req => {
+      if (req) {
+        showFloatingAi = true;
+      }
+    });
+    return unsub;
+  });
+
+  $effect(() => {
+    const unsub = activeSshProfile.subscribe(profile => {
+      if (profile) {
+        sidebarView = "files";
+        workspaceMode = "ssh_explorer";
+      }
+    });
+    return unsub;
+  });
+
+  import { ensureNyxDir } from "$lib/nyxConfig";
+  $effect(() => {
+    const unsub = currentDir.subscribe(async (val) => {
+      if (val) {
+        await ensureNyxDir();
+        // Notify AI backend of workspace root for agent logs
+        invoke("ai_set_workspace", { root: val }).catch(() => {});
+      }
+    });
+    return unsub;
+  });
+
+  // Open SSH session as a dedicated tab
+  function openSshSessionTab(profile: any) {
+    const existing = tabs.find(t => t.type === "ssh_session" && t.sshProfile?.id === profile.id);
+    if (existing) { activeTabId = existing.id; return; }
+    const id = "tab-ssh-" + Date.now().toString(36);
+    tabs = [...tabs, { id, type: "ssh_session", label: `SSH: ${profile.name}`, sshProfile: profile }];
+    activeTabId = id;
+  }
+
+  function openDbQueryTab(connId: string, label: string) {
+    const existing = tabs.find(t => t.type === "db_query" && t.connectionId === connId);
+    if (existing) { activeTabId = existing.id; return; }
+    const id = "tab-db-" + Date.now().toString(36);
+    tabs = [...tabs, { id, type: "db_query", label: `DB: ${label}`, connectionId: connId }];
+    activeTabId = id;
+  }
+
+  async function onRemoteFileOpen(sessionId: string, remotePath: string, name: string) {
+    const path = `sftp://${sessionId}${remotePath}`;
+    const existing = tabs.find((t) => t.filePath === path);
+    if (existing) { activeTabId = existing.id; return; }
+    
+    try {
+      addLog(`Opening remote file ${remotePath} via SFTP...`);
+      const content = await invoke<string>("sftp_read_file", {
+        sessionId, remotePath
+      });
+      addTab("file", { label: `[Remote] ${name}`, filePath: path, fileContent: content });
+    } catch (e) {
+      addToast(`Failed to open remote file: ${e}`, "error");
+    }
+  }
+
+  // Register a PTY session as private (AI-restricted)
+  async function markSessionPrivate(sessionId: string) {
+    try {
+      await invoke("pty_mark_private", { sessionId });
+      privateSessionIds = new Set([...privateSessionIds, sessionId]);
+    } catch (e) {
+      console.error("Failed to mark private:", e);
+    }
+  }
 
   // ─── Custom Window Controls ───────────────────
   const appWindow = getCurrentWindow();
@@ -519,7 +655,7 @@
 
   // ─── Sidebar ──────────────────────────────────
   const SIDEBAR_LABELS: Record<string, string> = {
-    files: "Explorer", search: "Search", git: "Source Control", platformio: "Platform IO", extensions: "Extensions",
+    files: "Workspace", search: "Search", ssh: "SSH Tree", postman: "API Client", mqtt: "MQTT Client", platformio: "Platform IO", extensions: "Extensions", database: "Database Client",
   };
 
   function toggleSidebar(view: SidebarView) {
@@ -535,7 +671,7 @@
     { id: "term", label: "Toggle Terminal", desc: "Open or focus terminal tab", action: () => { const t = tabs.find(t => t.type === "terminal"); if (t) activeTabId = t.id; else addTab("terminal"); } },
     { id: "sidebar-explorer", label: "Toggle Explorer", desc: "Show/hide file explorer", action: () => toggleSidebar(sidebarView === "files" ? null : "files") },
     { id: "sidebar-search", label: "Toggle Search", desc: "Show/hide search panel", action: () => toggleSidebar(sidebarView === "search" ? null : "search") },
-    { id: "sidebar-git", label: "Toggle Source Control", desc: "Show/hide git panel", action: () => toggleSidebar(sidebarView === "git" ? null : "git") },
+    { id: "sidebar-git", label: "Toggle Source Control", desc: "Show/hide git panel", action: () => { if (sidebarView === "files" && workspaceMode === "git") { sidebarView = null; } else { sidebarView = "files"; workspaceMode = "git"; } } },
     { id: "ai", label: "Toggle AI Chat", desc: "Show/hide floating AI chat panel", action: () => { showFloatingAi = !showFloatingAi; if (showFloatingAi) showFloatingRunner = false; } },
     { id: "runner", label: "Toggle Runner Panel", desc: "Show/hide runner panel", action: () => { showFloatingRunner = !showFloatingRunner; if (showFloatingRunner) showFloatingAi = false; } },
     { id: "open-file", label: "Open File...", desc: "Open a file dialog", action: () => triggerOpenFile() },
@@ -687,8 +823,10 @@
 <svelte:window onkeydown={handleGlobalKeydown} onmousemove={onResizeMove} onmouseup={onResizeEnd} onclick={() => (addMenuOpen = false)} />
 
 <div class="workspace">
+  <!-- Custom Background Backdrop -->
+  <div class="workspace-backdrop"></div>
   <!-- ═══ TAB BAR ═══ -->
-  <header class="tab-bar" data-tauri-drag-region onmousedown={handleHeaderMousedown}>
+  <header class="tab-bar" onmousedown={handleHeaderMousedown}>
     <!-- Left tools -->
     <div class="tab-bar-left">
       <button class="tool-btn" onclick={triggerOpenFile} title="Open File">
@@ -742,43 +880,74 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
       </button>
       <span class="bar-divider"></span>
-      <div class="mac-controls">
-        <button class="mac-dot mac-minimize" onclick={minimizeWindow} aria-label="Minimize"></button>
-        <button class="mac-dot mac-maximize" onclick={toggleMaximizeWindow} aria-label="Maximize"></button>
-        <button class="mac-dot mac-close" onclick={closeWindow} aria-label="Close"></button>
+      <div class="win-controls">
+        <button class="win-ctrl" onclick={minimizeWindow} aria-label="Minimize" title="Minimize">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="win-ctrl" onclick={toggleMaximizeWindow} aria-label="Maximize" title="Maximize">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        </button>
+        <button class="win-ctrl win-close" onclick={closeWindow} aria-label="Close" title="Close">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+        </button>
       </div>
     </div>
 
-    <!-- Add menu -->
-    {#if addMenuOpen}
-      <div class="add-menu" onclick={(e) => e.stopPropagation()} role="presentation">
-        {#each [{ type: "terminal", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`, label: "Terminal" }, { type: "preview", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`, label: "Preview" }, { type: "file", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`, label: "Editor" }] as item}
-          <button class="add-menu-item" onclick={() => addTab(item.type as TabType)}>
-            <span class="add-menu-icon">{@html item.icon}</span>
-            <span>{item.label}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
   </header>
+
+  <!-- Add menu (outside header to avoid backdrop-filter stacking context) -->
+  {#if addMenuOpen}
+    <div class="add-menu" onclick={(e) => e.stopPropagation()} role="presentation">
+      {#each [
+        { type: "terminal", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`, label: "Terminal" },
+        { type: "preview", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`, label: "Preview" },
+        { type: "file", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`, label: "Editor" },
+        { type: "private", icon: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`, label: "Private" },
+      ] as item}
+        <button class="add-menu-item" class:private-item={item.type === "private"} onclick={() => addTab(item.type as TabType)}>
+          <span class="add-menu-icon">{@html item.icon}</span>
+          <span>{item.label}</span>
+          {#if item.type === "private"}
+            <span class="private-tag">AI Restricted</span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   <!-- ═══ BODY ═══ -->
   <div class="body">
     <!-- Activity Bar -->
     <nav class="activity-bar">
       <div class="activity-top">
-        {#each ["files", "search", "git", "platformio", "extensions"] as view}
-          <button class="activity-btn" class:active={sidebarView === view} onclick={() => toggleSidebar(view as SidebarView)} title={SIDEBAR_LABELS[view]}>
+        {#each activityViews as view, i}
+          <button
+            class="activity-btn"
+            class:active={sidebarView === view}
+            onclick={() => toggleSidebar(view as SidebarView)}
+            title={SIDEBAR_LABELS[view]}
+            draggable="true"
+            ondragstart={() => handleIconDragStart(i)}
+            ondragover={handleIconDragOver}
+            ondrop={() => handleIconDrop(i)}
+            style="cursor: grab;"
+          >
             {#if view === "files"}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
             {:else if view === "search"}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            {:else if view === "git"}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            {:else if view === "ssh"}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="4"/><line x1="6" y1="6" x2="18" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="18" x2="18" y2="18"/></svg>
+            {:else if view === "postman"}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            {:else if view === "mqtt"}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
             {:else if view === "platformio"}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 12h6M12 9v6"/><path d="M7.5 7.5l9 9M7.5 16.5l9-9"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 12h6M12 9v6"/><path d="M7.5 7.5l9 9M7.5 16.5l9-9"/></svg>
             {:else if view === "extensions"}
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
+            {:else if view === "database"}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
             {/if}
           </button>
         {/each}
@@ -797,29 +966,60 @@
         </div>
         <div class="sidebar-body">
           {#if sidebarView === "files"}
-            <FileManager onFileOpen={onFileOpen} revealPath={primaryCwd} onDirChange={(dir: string) => { primaryCwd = dir; currentDir.set(dir); }} onFileContext={onFileContextMenu} />
+            <div class="sidebar-workspace-content">
+              {#if workspaceMode === "explorer"}
+                <FileManager onFileOpen={onFileOpen} revealPath={primaryCwd} onDirChange={(dir: string) => { primaryCwd = dir; currentDir.set(dir); }} onFileContext={onFileContextMenu} />
+              {:else if workspaceMode === "git"}
+                <GitStatus />
+              {:else}
+                <SSHExplorer />
+              {/if}
+            </div>
+            
+            <!-- Workspace / Git / SSH Toggle Footer with Action Buttons -->
+            <div class="sidebar-toggle-footer">
+              <div class="toggle-switch">
+                <button class:active={workspaceMode === "explorer"} onclick={() => workspaceMode = "explorer"}>Workspace</button>
+                <button class:active={workspaceMode === "git"} onclick={() => workspaceMode = "git"}>Git Track</button>
+                <button class:active={workspaceMode === "ssh_explorer"} onclick={() => workspaceMode = "ssh_explorer"}>SSH Explorer</button>
+              </div>
+            </div>
           {:else if sidebarView === "search"}
             <SearchInFiles searchPath={primaryCwd} onFileOpen={onFileOpen} onDirChange={(dir: string) => { primaryCwd = dir; currentDir.set(dir); }} />
-          {:else if sidebarView === "git"}
-            <GitStatus />
+          {:else if sidebarView === "ssh"}
+            <SSHTree onConnect={openSshSessionTab} />
+          {:else if sidebarView === "postman"}
+            <PostmanClient isSidebar={true} onOpenRequest={(id: string) => {
+              const existing = tabs.find(t => t.type === "api_client" && t.requestId === id);
+              if (existing) { activeTabId = existing.id; return; }
+              const tabId = "tab-api-" + Date.now().toString(36);
+              tabs = [...tabs, { id: tabId, type: "api_client", label: "API Client", requestId: id }];
+              activeTabId = tabId;
+            }} />
+          {:else if sidebarView === "mqtt"}
+            <MQTTClient />
           {:else if sidebarView === "platformio"}
             <div class="pio-sidebar">
-              <!-- Status header -->
-              <div class="pio-status-bar">
-                {#if pioBusy || pioInstalling}
-                  <span class="pio-spinner"></span>
-                {/if}
-                <span class="pio-status-text" class:pio-installed={pioStatus.installed} class:pio-not-installed={!pioStatus.installed}>
-                  {#if pioStatusMsg}
-                    {pioStatusMsg}
-                  {:else if pioStatus.installed}
-                    {pioStatus.version || "PlatformIO ready"}
-                  {:else if pioStatus.error}
-                    Error checking PlatformIO
-                  {:else}
-                    Checking...
+              <div class="pio-status-bar" style="display: flex; justify-content: space-between; align-items: center; width: 100%; box-sizing: border-box;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  {#if pioBusy || pioInstalling}
+                    <span class="pio-spinner"></span>
                   {/if}
-                </span>
+                  <span class="pio-status-text" class:pio-installed={pioStatus.installed} class:pio-not-installed={!pioStatus.installed}>
+                    {#if pioStatusMsg}
+                      {pioStatusMsg}
+                    {:else if pioStatus.installed}
+                      {pioStatus.version || "PlatformIO ready"}
+                    {:else if pioStatus.error}
+                      Error checking PlatformIO
+                    {:else}
+                      Checking...
+                    {/if}
+                  </span>
+                </div>
+                <button class="tool-btn" onclick={() => checkPio(true)} title="Recheck PlatformIO" style="padding: 2px;">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                </button>
               </div>
 
               {#if !pioStatus.installed && !pioBusy}
@@ -860,7 +1060,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
                     <span>Clean</span>
                   </button>
-                  <button class="pio-item" onclick={() => addTab("terminal")}>
+                  <button class="pio-item" onclick={() => addTab("terminal", { label: "Serial Monitor", initialCommand: "pio device monitor" })}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                     <span>Serial Monitor</span>
                   </button>
@@ -925,6 +1125,8 @@
                 {/each}
               </div>
             </div>
+          {:else if sidebarView === "database"}
+            <DatabaseClient isSidebar={true} onOpenQuery={(connId: string, label: string) => openDbQueryTab(connId, label)} />
           {/if}
         </div>
         <div class="sidebar-resize" onmousedown={onResizeStart} role="presentation"></div>
@@ -936,7 +1138,7 @@
       {#each tabs as tab (tab.id)}
         <div class="tab-panel" class:hidden={activeTabId !== tab.id}>
           {#if tab.type === "terminal"}
-            <SplitTerminal cwd={primaryCwd} onCwdChange={onTerminalCwdChange} />
+            <SplitTerminal cwd={primaryCwd} onCwdChange={onTerminalCwdChange} initialCommand={tab.initialCommand} />
           {:else if tab.type === "file"}
             {#if tab.filePath && tab.fileContent !== undefined}
               <ViewerRouter
@@ -972,6 +1174,28 @@
             </div>
           {:else if tab.type === "settings"}
             <Settings />
+          {:else if tab.type === "ssh_session"}
+            <SSHSession
+              profile={tab.sshProfile}
+              onOpenFile={onRemoteFileOpen}
+              onClose={() => { tabs = tabs.filter(t => t.id !== tab.id); if (activeTabId === tab.id) activeTabId = tabs[0]?.id ?? ""; }}
+            />
+          {:else if tab.type === "private"}
+            <div class="private-terminal-wrap">
+              <div class="private-badge">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                AI Restricted — AI cannot access this terminal
+              </div>
+              <SplitTerminal
+                cwd={primaryCwd}
+                onCwdChange={onTerminalCwdChange}
+                onSessionCreated={(sid: string) => markSessionPrivate(sid)}
+              />
+            </div>
+          {:else if tab.type === "api_client"}
+            <PostmanClient isSidebar={false} activeRequestId={tab.requestId ?? null} onOpenRequest={() => {}} />
+          {:else if tab.type === "db_query"}
+            <DatabaseClient isSidebar={false} activeConnectionId={tab.connectionId ?? null} onOpenQuery={() => {}} />
           {/if}
         </div>
       {/each}
@@ -1058,6 +1282,11 @@
     </div>
   {/if}
 
+  <!-- Photoshop-style Floating AI Input Bar -->
+  <div class="photoshop-ai-bar-container">
+    <AIFloatingBar />
+  </div>
+
   <!-- ═══ GLOBAL COMPONENTS ═══ -->
   <Toast />
   <ContextMenu open={ctxOpen} x={ctxX} y={ctxY} items={contextMenuItems} onclose={() => (ctxOpen = false)} />
@@ -1066,13 +1295,30 @@
 </div>
 
 <style>
+  .photoshop-ai-bar-container {
+    position: fixed;
+    bottom: 50px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    pointer-events: none;
+  }
+  .photoshop-ai-bar-container :global(> *) {
+    pointer-events: auto;
+  }
+
   .workspace { display:flex; flex-direction:column; height:100vh; width:100vw; background:var(--bg-primary); color:var(--text-primary); overflow:hidden; }
 
   /* ═══ TAB BAR ═══ */
   .tab-bar {
-    display:flex; align-items:center; min-height:34px; background:var(--bg-secondary);
-    border-bottom:1px solid var(--border-primary); flex-shrink:0; user-select:none; padding:2px 4px; gap:4px; position:relative;
-    -webkit-app-region:drag;
+    display:flex; align-items:center; min-height:34px; background:var(--glass-bg, var(--bg-secondary));
+    border-bottom:1px solid var(--glass-border, var(--border-primary)); flex-shrink:0; user-select:none; padding:2px 4px; gap:4px; position:relative;
+    z-index:1005;
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
   }
   .tab-bar-left, .tab-bar-right {
     display:flex; align-items:center; gap:2px; flex-shrink:0; -webkit-app-region:no-drag;
@@ -1086,22 +1332,16 @@
   .tool-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
   .tool-btn.active { color:var(--accent-blue); background:color-mix(in srgb, var(--accent-blue) 12%, transparent); }
 
-  /* macOS traffic light dots */
-  .mac-controls { display:flex; align-items:center; gap:7px; -webkit-app-region:no-drag; }
-  .mac-dot {
+  /* Window controls (ghost SVG buttons) */
+  .win-controls { display:flex; align-items:center; gap:4px; -webkit-app-region:no-drag; }
+  .win-ctrl {
     display:inline-flex; align-items:center; justify-content:center;
-    width:12px; height:12px; border-radius:50%; border:none; cursor:pointer; padding:0;
-    transition:filter 0.15s ease; position:relative;
-    -webkit-app-region:no-drag;
+    width:28px; height:20px; border:none; background:transparent;
+    color:var(--text-muted); cursor:pointer; border-radius:4px;
+    transition:all 0.15s ease; -webkit-app-region:no-drag;
   }
-  .mac-dot:hover { filter:brightness(1.2); }
-  .mac-close { background:#ff5f57; border:1px solid #e0453e; }
-  .mac-minimize { background:#febc2e; border:1px solid #dda01d; }
-  .mac-maximize { background:#28c840; border:1px solid #1faa33; }
-  .mac-close::before { content:"×"; position:absolute; font-weight:700; font-size:var(--fs-9); color:#4c0002; opacity:0; transition:opacity 0.15s; pointer-events:none; line-height:1; }
-  .mac-minimize::before { content:"–"; position:absolute; font-weight:700; font-size:var(--fs-9); color:#5c3e00; opacity:0; transition:opacity 0.15s; pointer-events:none; line-height:1; top:4px; }
-  .mac-maximize::before { content:"+"; position:absolute; font-weight:700; font-size:var(--fs-8); color:#024c0e; opacity:0; transition:opacity 0.15s; pointer-events:none; line-height:1; }
-  .mac-controls:hover .mac-dot::before { opacity:1; }
+  .win-ctrl:hover { color:var(--text-primary); background:var(--bg-hover); }
+  .win-close:hover { color:var(--accent-red); background:color-mix(in srgb, var(--accent-red) 12%, transparent); }
 
   /* Tab wrap — horizontal scroll, hidden scrollbar (seperti Brave) */
   .tab-wrap {
@@ -1136,11 +1376,12 @@
 
   /* Add menu dropdown */
   .add-menu {
-    position:absolute; top:100%; right:60px; margin-top:2px;
+    position:fixed; top:38px; right:50px;
     background:var(--bg-elevated); border:1px solid var(--border-primary);
-    border-radius:8px; padding:4px; z-index:200;
+    border-radius:8px; padding:4px; z-index:9999;
     box-shadow:0 8px 24px rgba(0,0,0,0.4); min-width:140px;
     animation:floatUp 0.15s ease;
+    -webkit-app-region: no-drag;
   }
   .add-menu-item {
     display:flex; align-items:center; gap:8px; width:100%;
@@ -1156,7 +1397,7 @@
 
   .activity-bar { width:var(--activity-bar-width); display:flex; flex-direction:column; align-items:center; background:var(--bg-secondary); border-right:1px solid var(--border-primary); padding:4px 0; flex-shrink:0; gap:2px; }
   .activity-top { display:flex; flex-direction:column; align-items:center; gap:2px; flex:1; }
-  .activity-btn { display:flex; align-items:center; justify-content:center; width:40px; height:40px; background:none; border:none; color:var(--text-muted); cursor:pointer; border-radius:8px; transition:all 0.15s ease; position:relative; }
+  .activity-btn { display:flex; align-items:center; justify-content:center; width:30px; height:30px; background:none; border:none; color:var(--text-muted); cursor:pointer; border-radius:6px; transition:all 0.15s ease; position:relative; }
   .activity-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
   .activity-btn.active { color:var(--accent-blue); }
   .activity-btn.active::before { content:''; position:absolute; left:-5px; top:50%; transform:translateY(-50%); width:3px; height:20px; background:var(--accent-blue); border-radius:0 3px 3px 0; }
@@ -1170,6 +1411,70 @@
   .sidebar-body { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:0; }
   .sidebar-resize { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; z-index:10; }
   .sidebar-resize:hover, .sidebar-resize:active { background:var(--accent-blue); opacity:0.4; }
+
+  /* Sidebar Bottom Toggle Switch */
+  .sidebar-workspace-content {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar-toggle-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border-subtle);
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .toggle-switch {
+    display: flex;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 2px;
+    flex: 1;
+  }
+  .toggle-switch button {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: var(--fs-9-5);
+    padding: 2px 4px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-weight: 500;
+    transition: all 0.1s ease;
+  }
+  .toggle-switch button.active {
+    background: var(--accent-blue);
+    color: var(--bg-primary);
+    font-weight: 600;
+  }
+  .git-footer-actions {
+    display: flex;
+    gap: 3px;
+  }
+  .git-footer-actions button {
+    background: none;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    padding: 3px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.1s ease;
+  }
+  .git-footer-actions button:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
+    background: var(--bg-hover);
+  }
 
   /* Platform IO */
   .pio-sidebar { display:flex; flex-direction:column; height:100%; overflow-y:auto; font-size:var(--font-size); }
@@ -1292,4 +1597,45 @@
   .log-time { color:var(--text-muted); flex-shrink:0; }
   .log-msg { color:var(--text-secondary); word-break:break-word; }
   .log-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:var(--font-size); font-family:initial; }
+
+  /* Private Terminal */
+  .private-terminal-wrap { display:flex; flex-direction:column; height:100%; }
+  .private-badge { display:flex; align-items:center; gap:6px; padding:4px 10px; background:color-mix(in srgb, var(--accent-red) 10%, transparent); border-bottom:1px solid color-mix(in srgb, var(--accent-red) 30%, transparent); color:var(--accent-red); font-size:var(--fs-10); font-weight:600; flex-shrink:0; }
+  .private-badge svg { flex-shrink:0; }
+  .private-item { color:var(--accent-red) !important; }
+  .private-item:hover { background:color-mix(in srgb, var(--accent-red) 10%, transparent) !important; }
+  .private-tag { margin-left:auto; font-size:var(--fs-9); background:color-mix(in srgb, var(--accent-red) 15%, transparent); color:var(--accent-red); padding:1px 5px; border-radius:3px; font-weight:700; }
+
+  /* Glassmorphic Backdrop and Panel styles */
+  .workspace-backdrop {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 0;
+    background: var(--app-bg-gradient, none);
+    background-image: var(--app-bg-image, none);
+    background-size: cover;
+    background-position: center;
+    pointer-events: none;
+  }
+  .workspace {
+    position: relative;
+    background: transparent !important;
+  }
+  .sidebar, .tab-bar, .status-bar, .activity-bar, .pm-sidebar, .ext-sidebar, .pio-sidebar, .float-panel, .settings-tabs,
+  .workspace-area, .sidebar-body, .sidebar-workspace-content {
+    background: var(--glass-bg, var(--bg-secondary)) !important;
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
+    border-color: var(--glass-border, var(--border-primary)) !important;
+    z-index: 1;
+  }
+  .workspace-area {
+    z-index: 1;
+  }
+  .tab-panel {
+    background: transparent !important;
+  }
 </style>

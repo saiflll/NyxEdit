@@ -286,6 +286,33 @@ pub fn git_init(repo_path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct GitCommitEntry {
+    pub hash: String,
+    pub author: String,
+    pub date: String,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn git_log(repo_path: String, max_count: Option<u32>) -> Result<Vec<GitCommitEntry>, String> {
+    let count = max_count.unwrap_or(20).to_string();
+    let out = run_git(&repo_path, &[
+        "log", &format!("--max-count={}", count),
+        "--format=%H||%an||%ai||%s",
+    ])?;
+    let entries = out.lines().filter(|l| !l.is_empty()).map(|line| {
+        let parts: Vec<&str> = line.splitn(4, "||").collect();
+        GitCommitEntry {
+            hash: parts.get(0).unwrap_or(&"").to_string(),
+            author: parts.get(1).unwrap_or(&"").to_string(),
+            date: parts.get(2).unwrap_or(&"").to_string(),
+            message: parts.get(3).unwrap_or(&"").to_string(),
+        }
+    }).collect();
+    Ok(entries)
+}
+
 #[tauri::command]
 pub fn git_push(repo_path: String, remote: Option<String>, branch: Option<String>) -> Result<String, String> {
     let remote = remote.unwrap_or_else(|| "origin".into());
@@ -330,7 +357,8 @@ pub fn git_remote_url(repo_path: String) -> Result<String, String> {
     run_git(&repo_path, &["remote", "get-url", "origin"])
 }
 
-fn sys_check_installed(cmd: String) -> bool {
+#[tauri::command]
+pub fn sys_check_installed(cmd: String) -> bool {
     let mut check_cmd = if cfg!(target_os = "windows") {
         let mut c = std::process::Command::new("powershell.exe");
         c.args(&["-Command", &format!("Get-Command {} -ErrorAction SilentlyContinue", cmd)]);
@@ -348,6 +376,37 @@ fn sys_check_installed(cmd: String) -> bool {
     }
 
     check_cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn ssh_list_dir(username: String, host: String, port: u16) -> Result<String, String> {
+    let port_str = port.to_string();
+    let host_arg = format!("{}@{}", username, host);
+    
+    let mut cmd = std::process::Command::new("ssh");
+    cmd.args(&[
+        "-p", &port_str,
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
+        &host_arg,
+        "find . -maxdepth 3 -not -path '*/.*'"
+    ]);
+    
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    
+    let output = cmd.output().map_err(|e| format!("Failed to execute ssh command: {}", e))?;
+    
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        Err(format!("SSH command exited with error: {}", stderr))
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
