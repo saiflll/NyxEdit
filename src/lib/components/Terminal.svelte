@@ -13,6 +13,7 @@
     cols = 80,
     shell = undefined as string | undefined,
     password = undefined as string | undefined,
+    label = "",
     onReady = (_id: string) => {},
     onCommand = (_id: string, _line: string) => {},
   } = $props();
@@ -25,6 +26,7 @@
   let activeSessionId = $state<string | null>(null);
   let themeObserver: MutationObserver | null = null;
   let passwordSent = $state(false);
+  const bufferedOutput = new Map<string, string>();
 
   $effect(() => {
     if (sessionId) {
@@ -45,7 +47,7 @@
     terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: "block",
-      fontSize: 13,
+      fontSize: parseInt(localStorage.getItem("nyxedit-font-size") || "12", 10),
       fontFamily:
         localStorage.getItem("nyxedit-font") ||
         "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
@@ -97,8 +99,8 @@
     }
 
     unlisten = await listen<PtyOutputEvent>("pty-output", (event) => {
-      if (event.payload.session_id === activeSessionId) {
-        const data = event.payload.data;
+      const { session_id, data } = event.payload;
+      if (session_id === activeSessionId) {
         if (password && !passwordSent && /password:/i.test(data)) {
           passwordSent = true;
           invoke("pty_write", { sessionId: activeSessionId, data: password + "\n" });
@@ -107,6 +109,8 @@
         if (animationFrameId === null) {
           animationFrameId = requestAnimationFrame(flushTerminalData);
         }
+      } else {
+        bufferedOutput.set(session_id, (bufferedOutput.get(session_id) || "") + data);
       }
     });
 
@@ -114,6 +118,10 @@
       await openTerminal();
     } else {
       activeSessionId = sessionId;
+      if (bufferedOutput.has(sessionId)) {
+        terminal.write(bufferedOutput.get(sessionId)!);
+        bufferedOutput.delete(sessionId);
+      }
     }
 
     // Dynamic resize observer with 30ms debounce & safe bounds checks to prevent UI freezing
@@ -164,6 +172,7 @@
         localStorage.getItem("nyxedit-font") ||
         "'Cascadia Code', 'Fira Code', 'Consolas', monospace";
       terminal.options.fontFamily = storedFont;
+      terminal.options.fontSize = parseInt(localStorage.getItem("nyxedit-font-size") || "12", 10);
 
       terminal.options.theme = {
         background: "rgba(0,0,0,0)",
@@ -241,11 +250,38 @@
       shell: shell ?? null,
       rows: terminal.rows,
       cols: terminal.cols,
+      label: label || null,
     });
     sessionId = id;
     activeSessionId = id;
     activeTerminalSessionId.set(id);
     onReady(id);
+
+    if (bufferedOutput.has(id)) {
+      terminal.write(bufferedOutput.get(id)!);
+      bufferedOutput.delete(id);
+    }
+
+    // Force size calculation once PTY is activated
+    setTimeout(() => {
+      if (fitAddon) {
+        try {
+          fitAddon.fit();
+        } catch (e) {}
+      }
+    }, 150);
+
+    if (label) {
+      setTimeout(() => {
+        const isWin = navigator.userAgent.toLowerCase().includes("win");
+        if (!isWin) {
+          invoke("pty_write", {
+            sessionId: id,
+            data: `export PS1="\\[\\033[94m\\][${label}]\\[\\033[96m\\]\\w\\[\\033[92m\\]>\\[\\033[0m\\] "\nclear\n`,
+          }).catch(() => {});
+        }
+      }, 500);
+    }
   }
 
   function fitTerminal() {

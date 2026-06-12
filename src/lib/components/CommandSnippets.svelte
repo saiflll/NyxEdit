@@ -75,7 +75,8 @@
         await invoke("fs_write_file", { path: f, content: cmd });
         cmd = `node "${f}"`;
       }
-      await invoke("pty_write", { sessionId: terminalId, data: cmd + "\n" });
+      const isWin = navigator.userAgent.toLowerCase().includes("win");
+      await invoke("pty_write", { sessionId: terminalId, data: cmd + (isWin ? "\r" : "\n") });
     } catch (e: any) { console.error("Failed to run snippet:", e); }
   }
 

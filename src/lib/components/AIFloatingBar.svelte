@@ -1,8 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import { agents, aiSendRequest, fileEntries } from "../stores.svelte";
-  import { get } from "svelte/store";
 
   let input = $state("");
   let attachedFiles = $state<string[]>([]);
@@ -37,24 +34,6 @@
   let filteredFiles = $derived(
     allFiles.filter(f => !f.is_dir && f.name.toLowerCase().includes(mentionQuery.toLowerCase()))
   );
-
-  async function handleAttach() {
-    try {
-      const selected = await openDialog({
-        multiple: true,
-        directory: false,
-      });
-      if (selected) {
-        if (Array.isArray(selected)) {
-          attachedFiles = [...attachedFiles, ...selected];
-        } else if (typeof selected === "string") {
-          attachedFiles = [...attachedFiles, selected];
-        }
-      }
-    } catch (err) {
-      console.error("Attach file error:", err);
-    }
-  }
 
   function removeAttachedFile(index: number) {
     attachedFiles = attachedFiles.filter((_, i) => i !== index);
@@ -194,15 +173,6 @@
     {/if}
 
     <div class="floating-bar-content">
-      <!-- Attachment button -->
-      <button class="action-btn" onclick={handleAttach} title="Attach Files">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-        </svg>
-      </button>
-
-      <div class="bar-divider"></div>
-
       <!-- Agent selection dropdown -->
       <div class="agent-select-wrapper">
         <select 

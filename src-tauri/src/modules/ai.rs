@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::oneshot;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use chrono::Utc;
 
 #[derive(Clone, Serialize)]
@@ -85,6 +85,12 @@ pub struct AgentConfig {
     pub system_prompt: Option<String>,
     pub persona_id: Option<String>,
     pub built_in: bool,
+    /// Cached list of models fetched from the provider endpoint (persisted, no need to re-fetch)
+    #[serde(default)]
+    pub cached_models: Vec<String>,
+    /// Timestamp of last successful model sync (ISO 8601)
+    #[serde(default)]
+    pub models_synced_at: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -175,15 +181,72 @@ pub struct AiManager {
     pub usage: Arc<Mutex<HashMap<String, AgentUsage>>>,
     /// Current workspace root for agent log files
     pub workspace_root: Arc<Mutex<String>>,
+    /// Whether agents have been loaded from disk yet
+    pub loaded: Arc<Mutex<bool>>,
+}
+
+// ── Persistence helpers ────────────────────────────────────────────────────
+
+fn get_agents_file_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("agents.json"))
+}
+
+fn load_agents_from_disk(app: &tauri::AppHandle) -> HashMap<String, AgentConfig> {
+    let path = match get_agents_file_path(app) {
+        Some(p) => p,
+        None => return HashMap::new(),
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<HashMap<String, AgentConfig>>(&text).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_agents_to_disk(app: &tauri::AppHandle, agents: &HashMap<String, AgentConfig>) {
+    let path = match get_agents_file_path(app) {
+        Some(p) => p,
+        None => return,
+    };
+    // Create parent dir if needed
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // Mask API keys before writing — security best practice
+    let safe: HashMap<String, AgentConfig> = agents.iter().map(|(k, v)| {
+        let mut a = v.clone();
+        if a.api_key.as_deref().map(|k| !k.is_empty() && k != "********").unwrap_or(false) {
+            a.api_key = Some("********".to_string());
+        }
+        (k.clone(), a)
+    }).collect();
+    if let Ok(json) = serde_json::to_string_pretty(&safe) {
+        let _ = std::fs::write(&path, json);
+    }
 }
 
 impl AiManager {
     pub fn new() -> Self {
-        let agents = HashMap::new();
         Self {
-            agents: Arc::new(Mutex::new(agents)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
             usage: Arc::new(Mutex::new(HashMap::new())),
             workspace_root: Arc::new(Mutex::new(String::new())),
+            loaded: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    /// Ensure agents are loaded from disk once. Call at the start of every public command.
+    pub fn ensure_loaded(&self, app: &tauri::AppHandle) {
+        let mut loaded = self.loaded.lock().unwrap();
+        if !*loaded {
+            *loaded = true;
+            let from_disk = load_agents_from_disk(app);
+            if !from_disk.is_empty() {
+                let mut agents = self.agents.lock().unwrap();
+                // Merge: disk wins for keys that don't already exist in memory
+                for (k, v) in from_disk {
+                    agents.entry(k).or_insert(v);
+                }
+            }
         }
     }
 
@@ -641,28 +704,95 @@ fn compute_diff_lines(old_content: &str, new_content: &str) -> Vec<serde_json::V
     diff_lines
 }
 
+#[derive(Debug, Deserialize)]
+struct StyleCodingConfig {
+    #[serde(rename = "globalInstructions")]
+    global_instructions: Option<String>,
+    #[serde(rename = "skillRead")]
+    skill_read: Option<bool>,
+    #[serde(rename = "skillWrite")]
+    skill_write: Option<bool>,
+    #[serde(rename = "skillTerminal")]
+    skill_terminal: Option<bool>,
+}
+
+fn load_style_coding_config(workspace_root: &str) -> Option<StyleCodingConfig> {
+    let mut paths = Vec::new();
+    if !workspace_root.is_empty() {
+        paths.push(std::path::Path::new(workspace_root).join(".nyx").join("style_coding.json"));
+        paths.push(std::path::Path::new(workspace_root).join("contlib").join(".nyx").join("style_coding.json"));
+    }
+    if let Ok(curr) = std::env::current_dir() {
+        paths.push(curr.join(".nyx").join("style_coding.json"));
+        paths.push(curr.join("contlib").join(".nyx").join("style_coding.json"));
+    }
+
+    for path in paths {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str::<StyleCodingConfig>(&content) {
+                    return Some(config);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_path(workspace_root: &str, path: &str) -> String {
+    if workspace_root.is_empty() {
+        return path.to_string();
+    }
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        path.to_string()
+    } else {
+        std::path::Path::new(workspace_root)
+            .join(path)
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
 /// Execute a tool call and return the result as a string.
 async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_root: &str, is_private: bool) -> Result<String, String> {
+    let config = load_style_coding_config(workspace_root);
+    let skill_read = config.as_ref().and_then(|c| c.skill_read).unwrap_or(true);
+    let skill_write = config.as_ref().and_then(|c| c.skill_write).unwrap_or(false);
+    let skill_terminal = config.as_ref().and_then(|c| c.skill_terminal).unwrap_or(false);
+
     match tc.name.as_str() {
         "read_file" => {
+            if !skill_read {
+                return Err("Permission denied: Allow Reading Files is disabled in settings".to_string());
+            }
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
+            let resolved_path = resolve_path(workspace_root, path);
             let offset = tc.arguments["offset"].as_i64().unwrap_or(0) as usize;
             let limit = tc.arguments["limit"].as_i64().unwrap_or(2000) as usize;
-            let content = tokio::fs::read_to_string(path).await
+            let content = tokio::fs::read_to_string(&resolved_path).await
                 .map_err(|e| format!("read_file error: {}", e))?;
             let lines: Vec<&str> = content.lines().skip(offset).take(limit).collect();
             Ok(lines.join("\n"))
         }
         "write_file" => {
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
+            let resolved_path = resolve_path(workspace_root, path);
             let content = tc.arguments["content"].as_str().ok_or("missing content")?;
-            let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+            let old_content = tokio::fs::read_to_string(&resolved_path).await.unwrap_or_default();
             
             if old_content == content {
                 return Ok(format!("File {} already contains the requested content, no changes needed.", path));
             }
 
-            if let Some(app) = app {
+            let bypass = skill_write || app.is_none();
+            let success = if bypass {
+                if let Some(parent) = std::path::Path::new(&resolved_path).parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
+                }
+                tokio::fs::write(&resolved_path, content).await.map_err(|e| format!("write_file error: {}", e))?;
+                true
+            } else if let Some(app) = app {
                 let diff = compute_diff_lines(&old_content, content);
                 let (tx, rx) = oneshot::channel();
                 {
@@ -679,28 +809,39 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
 
                 match rx.await {
                     Ok(true) => {
-                        if let Some(parent) = std::path::Path::new(path).parent() {
+                        if let Some(parent) = std::path::Path::new(&resolved_path).parent() {
                             tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
                         }
-                        tokio::fs::write(path, content).await.map_err(|e| format!("write_file error: {}", e))?;
-                        Ok(format!("Successfully wrote file: {}", path))
+                        tokio::fs::write(&resolved_path, content).await.map_err(|e| format!("write_file error: {}", e))?;
+                        true
                     }
-                    Ok(false) => Err("File write permission denied by user".to_string()),
-                    Err(_) => Err("Permission request channel cancelled".to_string()),
+                    Ok(false) => return Err("File write permission denied by user".to_string()),
+                    Err(_) => return Err("Permission request channel cancelled".to_string()),
                 }
             } else {
-                if let Some(parent) = std::path::Path::new(path).parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(|e| format!("write_file mkdir error: {}", e))?;
+                return Err("No app handle".to_string());
+            };
+
+            if success {
+                if let Some(app) = app {
+                    let _ = app.emit("ai:file_changed", AiFileChangedEvent {
+                        id: tc.id.clone(),
+                        path: resolved_path.clone(),
+                        old_content: old_content.clone(),
+                        new_content: content.to_string(),
+                    });
                 }
-                tokio::fs::write(path, content).await.map_err(|e| format!("write_file error: {}", e))?;
-                Ok(format!("Written {} bytes to {}", content.len(), path))
+                Ok(format!("Successfully wrote file: {}", path))
+            } else {
+                Err("Failed to write file".to_string())
             }
         }
         "edit" => {
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
+            let resolved_path = resolve_path(workspace_root, path);
             let old = tc.arguments["old_string"].as_str().ok_or("missing old_string")?;
             let new = tc.arguments["new_string"].as_str().ok_or("missing new_string")?;
-            let old_content = tokio::fs::read_to_string(path).await
+            let old_content = tokio::fs::read_to_string(&resolved_path).await
                 .map_err(|e| format!("edit read error: {}", e))?;
             if !old_content.contains(old) {
                 return Err("edit: old_string not found in file".into());
@@ -711,7 +852,12 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
                 return Ok(format!("No changes to make in {}", path));
             }
 
-            if let Some(app) = app {
+            let bypass = skill_write || app.is_none();
+            let success = if bypass {
+                tokio::fs::write(&resolved_path, &new_content).await
+                    .map_err(|e| format!("edit write error: {}", e))?;
+                true
+            } else if let Some(app) = app {
                 let diff = compute_diff_lines(&old_content, &new_content);
                 let (tx, rx) = oneshot::channel();
                 {
@@ -728,20 +874,35 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
 
                 match rx.await {
                     Ok(true) => {
-                        tokio::fs::write(path, &new_content).await
+                        tokio::fs::write(&resolved_path, &new_content).await
                             .map_err(|e| format!("edit write error: {}", e))?;
-                        Ok(format!("Successfully applied edit to {}", path))
+                        true
                     }
-                    Ok(false) => Err("Edit permission denied by user".to_string()),
-                    Err(_) => Err("Permission request channel cancelled".to_string()),
+                    Ok(false) => return Err("Edit permission denied by user".to_string()),
+                    Err(_) => return Err("Permission request channel cancelled".to_string()),
                 }
             } else {
-                tokio::fs::write(path, &new_content).await
-                    .map_err(|e| format!("edit write error: {}", e))?;
-                Ok(format!("Replaced one occurrence in {}", path))
+                return Err("No app handle".to_string());
+            };
+
+            if success {
+                if let Some(app) = app {
+                    let _ = app.emit("ai:file_changed", AiFileChangedEvent {
+                        id: tc.id.clone(),
+                        path: resolved_path.clone(),
+                        old_content: old_content.clone(),
+                        new_content: new_content.clone(),
+                    });
+                }
+                Ok(format!("Successfully applied edit to {}", path))
+            } else {
+                Err("Failed to apply edit".to_string())
             }
         }
         "grep" => {
+            if !skill_read {
+                return Err("Permission denied: Allow Reading Files is disabled in settings".to_string());
+            }
             let pattern = tc.arguments["pattern"].as_str().ok_or("missing pattern")?;
             let root = tc.arguments["root"].as_str().unwrap_or(workspace_root);
             let re = regex::Regex::new(pattern).map_err(|e| format!("grep regex error: {}", e))?;
@@ -777,6 +938,9 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
             Ok(results.join("\n"))
         }
         "glob" => {
+            if !skill_read {
+                return Err("Permission denied: Allow Reading Files is disabled in settings".to_string());
+            }
             let pattern = tc.arguments["pattern"].as_str().ok_or("missing pattern")?;
             let root = tc.arguments["root"].as_str().unwrap_or(workspace_root);
             let glob_pattern = format!("{}/{}", root.trim_end_matches('/'), pattern);
@@ -796,8 +960,12 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
             Ok(entries.join("\n"))
         }
         "list_directory" => {
+            if !skill_read {
+                return Err("Permission denied: Allow Reading Files is disabled in settings".to_string());
+            }
             let path = tc.arguments["path"].as_str().ok_or("missing path")?;
-            let mut entries = tokio::fs::read_dir(path).await
+            let resolved_path = resolve_path(workspace_root, path);
+            let mut entries = tokio::fs::read_dir(&resolved_path).await
                 .map_err(|e| format!("list_directory error: {}", e))?;
             let mut lines = Vec::new();
             while let Some(entry) = entries.next_entry().await.map_err(|e| format!("list_directory entry: {}", e))? {
@@ -816,8 +984,14 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
             let cwd = tc.arguments["cwd"].as_str().unwrap_or("");
             let timeout_secs = tc.arguments["timeout"].as_u64().unwrap_or(30);
 
-            // Ask for permission if AppHandle is present
-            let command_to_run = if let Some(app) = app {
+            // Use workspace_root if cwd is empty
+            let cwd_to_use = if cwd.is_empty() { workspace_root } else { cwd };
+
+            // Ask for permission if AppHandle is present and terminal execution is not bypassed
+            let bypass = skill_terminal || app.is_none();
+            let command_to_run = if bypass {
+                command.to_string()
+            } else if let Some(app) = app {
                 let (tx, rx) = oneshot::channel();
                 {
                     let mut pending = get_pending_bash_permissions().lock().unwrap();
@@ -827,7 +1001,7 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
                 let _ = app.emit("ai:request_tool_permission", BashPermissionRequest {
                     id: tc.id.clone(),
                     command: command.to_string(),
-                    cwd: cwd.to_string(),
+                    cwd: cwd_to_use.to_string(),
                 });
 
                 // Wait for the oneshot receiver
@@ -855,8 +1029,8 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
                 c.arg("-c").arg(&command_to_run);
                 c
             };
-            if !cwd.is_empty() {
-                cmd.current_dir(cwd);
+            if !cwd_to_use.is_empty() {
+                cmd.current_dir(cwd_to_use);
             }
             let output = tokio::time::timeout(
                 std::time::Duration::from_secs(timeout_secs),
@@ -880,6 +1054,19 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
         }
         _ => Err(format!("Unknown tool: {}", tc.name)),
     }
+}
+
+#[derive(Clone, Serialize)]
+pub struct AiFileChangedEvent {
+    pub id: String,
+    pub path: String,
+    pub old_content: String,
+    pub new_content: String,
+}
+
+#[tauri::command]
+pub fn ai_compute_diff(old_content: String, new_content: String) -> Vec<serde_json::Value> {
+    compute_diff_lines(&old_content, &new_content)
 }
 
 #[tauri::command]
@@ -983,9 +1170,14 @@ async fn run_react_loop(
 
         if !tool_calls.is_empty() {
             // Execute tools and add results to conversation
-            let workspace_root = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
+            let state_root = state.workspace_root.lock().unwrap().clone();
+            let workspace_root = if state_root.is_empty() {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            } else {
+                state_root
+            };
 
             // Add assistant message with tool calls
             let assistant_msg = serde_json::json!({
@@ -1048,8 +1240,16 @@ pub async fn ai_chat_stream(
     messages: Vec<ChatMessage>,
     workspace_root: Option<String>,
     active_session_id: Option<String>,
+    model_override: Option<String>,
 ) -> Result<(), String> {
+    state.ensure_loaded(&app);
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
+    // Apply model override if provided (Auto Mode selects a specific model from cached_models)
+    if let Some(ref m) = model_override {
+        if !m.is_empty() {
+            agent.model = m.clone();
+        }
+    }
 
     // Update workspace root for logging
     if let Some(ref root) = workspace_root {
@@ -1063,10 +1263,9 @@ pub async fn ai_chat_stream(
             let _ = app.emit("ai:error", AiStreamError { error: "API key is configured but not found in OS Keychain. Please re-enter the key in Settings > Agents.".to_string() });
             return Err("API key not found in keychain".to_string());
         }
-    } else {
-        let _ = app.emit("ai:error", AiStreamError { error: format!("No API key configured for '{}'. Add one in Settings > Agents.", agent_id) });
-        return Err("API key not configured".to_string());
+        // else: key is stored inline (non-masked), use it as-is
     }
+    // Note: api_key = None is OK for local/no-key providers (ollama, other self-hosted).
 
     let base_url = agent.base_url.clone().unwrap_or_else(|| default_base_url(&agent.provider).to_string());
 
@@ -1184,6 +1383,7 @@ pub async fn ai_list_agents(
     state: tauri::State<'_, AiManager>,
     secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
 ) -> Result<Vec<AgentConfig>, String> {
+    state.ensure_loaded(&app);
     let mut list = state.list_agents();
     for agent in &mut list {
         let has_key = if let Ok(Some(_)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id) {
@@ -1210,6 +1410,7 @@ pub async fn ai_update_agent(
     secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
     mut config: AgentConfig,
 ) -> Result<(), String> {
+    state.ensure_loaded(&app);
     if let Some(ref key) = config.api_key {
         if key == "********" {
             // Keep existing key in Keychain, do nothing
@@ -1223,7 +1424,11 @@ pub async fn ai_update_agent(
     } else {
         let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "codlib-ai", &config.id);
     }
-    state.update_agent(config)
+    state.update_agent(config)?;
+    // Persist to disk
+    let agents = state.agents.lock().unwrap();
+    save_agents_to_disk(&app, &agents);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1233,8 +1438,13 @@ pub async fn ai_remove_agent(
     secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
     agent_id: String,
 ) -> Result<(), String> {
+    state.ensure_loaded(&app);
     let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "codlib-ai", &agent_id);
-    state.remove_agent(&agent_id)
+    state.remove_agent(&agent_id)?;
+    // Persist to disk
+    let agents = state.agents.lock().unwrap();
+    save_agents_to_disk(&app, &agents);
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -1366,16 +1576,390 @@ pub async fn ai_list_models(
         "gemini" => fetch_gemini_models(&api_key).await,
         "openrouter" => fetch_openrouter_models(&api_key).await,
         _ => {
+            // User-provided base_url always takes priority over hardcoded endpoints.
+            // This allows private/custom deployments (e.g. Alibaba private MaaS) to work correctly.
+            if let Some(ref user_url) = base_url {
+                let url = user_url.trim();
+                if !url.is_empty() {
+                    return fetch_openai_models(url, &api_key).await;
+                }
+            }
+            // Fall back to hardcoded preset URL for the provider.
             if let Some(endpoint) = provider_endpoint(&provider) {
                 fetch_openai_models(endpoint, &api_key).await
             } else {
-                let base = base_url.unwrap_or_else(|| default_base_url(&provider).to_string());
-                if base.is_empty() {
-                    return Err(format!("Unknown provider '{}'. No base URL configured.", provider));
-                }
-                fetch_openai_models(&base, &api_key).await
+                Err(format!(
+                    "Provider '{}' has no default endpoint. Please specify a Base URL.",
+                    provider
+                ))
             }
         }
+    }
+}
+
+/// Fetch models for a saved agent using its stored credentials, then cache the result.
+/// Call this once after creating/updating an agent. Subsequently, cached_models is used
+/// so no repeated network calls are needed.
+#[tauri::command]
+pub async fn ai_sync_agent_models(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AiManager>,
+    secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
+    agent_id: String,
+) -> Result<Vec<String>, String> {
+    let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
+
+    // Load real API key from keychain
+    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
+        agent.api_key = Some(real_key);
+    }
+
+    // Resolve the endpoint: prefer agent's base_url, fall back to known preset
+    let base_url_str: String = if let Some(ref url) = agent.base_url {
+        let trimmed = url.trim().to_string();
+        if !trimmed.is_empty() { trimmed } else { String::new() }
+    } else {
+        String::new()
+    };
+
+    let models = match agent.provider.as_str() {
+        "vercel" => vercel_models(),
+        "gemini" => fetch_gemini_models(&agent.api_key).await?,
+        "openrouter" => fetch_openrouter_models(&agent.api_key).await?,
+        _ => {
+            if !base_url_str.is_empty() {
+                fetch_openai_models(&base_url_str, &agent.api_key).await?
+            } else if let Some(endpoint) = provider_endpoint(&agent.provider) {
+                fetch_openai_models(endpoint, &agent.api_key).await?
+            } else {
+                return Err(format!(
+                    "Provider '{}' has no endpoint configured. Add a Base URL in Settings > Agents.",
+                    agent.provider
+                ));
+            }
+        }
+    };
+
+    let model_ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
+
+    // Store cache back into the agent config and persist to disk
+    {
+        let mut agents = state.agents.lock().unwrap();
+        if let Some(a) = agents.get_mut(&agent_id) {
+            a.cached_models = model_ids.clone();
+            a.models_synced_at = Some(Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        }
+        save_agents_to_disk(&app, &agents);
+    }
+
+    Ok(model_ids)
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ProbeResult {
+    pub id: String,
+    pub status: String, // "ok" | "auth_error" | "quota_error" | "model_error" | "timeout" | "error"
+    pub latency_ms: u64,
+    pub error_hint: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ProbeProgress {
+    pub total: usize,
+    pub done: usize,
+    pub current_model: String,
+}
+
+async fn probe_single_model(
+    model_id: String,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    provider: String,
+) -> ProbeResult {
+    let start = std::time::Instant::now();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build();
+    
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => return ProbeResult {
+            id: model_id,
+            status: "error".to_string(),
+            latency_ms: 0,
+            error_hint: Some(e.to_string()),
+        }
+    };
+
+    let is_gemini_native = provider == "gemini" && base_url.as_ref().map_or(true, |url| url.trim().is_empty() || !url.starts_with("http"));
+
+    let res = if is_gemini_native {
+        let key = match &api_key {
+            Some(k) => k,
+            None => return ProbeResult {
+                id: model_id,
+                status: "auth_error".to_string(),
+                latency_ms: 0,
+                error_hint: Some("API Key is required for Gemini native".to_string()),
+            }
+        };
+        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", model_id, key);
+        let body = serde_json::json!({
+            "contents": [{"parts": [{"text": "Reply with: OK"}]}],
+            "generationConfig": {"maxOutputTokens": 5}
+        });
+        client.post(&url).json(&body).send().await
+    } else {
+        let resolved_url = if let Some(ref url) = base_url {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                trimmed.to_string()
+            } else {
+                default_base_url(&provider).to_string()
+            }
+        } else {
+            default_base_url(&provider).to_string()
+        };
+
+        if resolved_url.is_empty() {
+            return ProbeResult {
+                id: model_id,
+                status: "error".to_string(),
+                latency_ms: 0,
+                error_hint: Some(format!("No endpoint URL configured for provider '{}'", provider)),
+            };
+        }
+
+        let url = format!("{}/chat/completions", resolved_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": model_id,
+            "messages": [{"role": "user", "content": "Reply with: OK"}],
+            "max_tokens": 15,
+            "temperature": 0.5,
+        });
+
+        let mut req = client.post(&url).json(&body);
+        if let Some(ref key) = api_key {
+            if !key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", key));
+            }
+        }
+        req.send().await
+    };
+
+    let latency = start.elapsed().as_millis() as u64;
+
+    match res {
+        Ok(resp) => {
+            let status_code = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            
+            if status_code.is_success() {
+                let body_lower = body_text.to_lowercase();
+                if body_lower.contains("insufficient_quota") || body_lower.contains("insufficient balance") || body_lower.contains("exceeded your current quota") {
+                    ProbeResult {
+                        id: model_id,
+                        status: "quota_error".to_string(),
+                        latency_ms: latency,
+                        error_hint: Some("Quota exceeded or insufficient balance".to_string()),
+                    }
+                } else if body_lower.contains("invalid api key") || body_lower.contains("incorrect api key") || body_lower.contains("invalid_api_key") {
+                    ProbeResult {
+                        id: model_id,
+                        status: "auth_error".to_string(),
+                        latency_ms: latency,
+                        error_hint: Some("Invalid API Key".to_string()),
+                    }
+                } else {
+                    ProbeResult {
+                        id: model_id,
+                        status: "ok".to_string(),
+                        latency_ms: latency,
+                        error_hint: None,
+                    }
+                }
+            } else {
+                let status_val = status_code.as_u16();
+                let hint = if !body_text.is_empty() {
+                    if let Ok(json_body) = serde_json::from_str::<Value>(&body_text) {
+                        if let Some(msg) = json_body["error"]["message"].as_str() {
+                            msg.to_string()
+                        } else if let Some(msg) = json_body["error"].as_str() {
+                            msg.to_string()
+                        } else {
+                            body_text
+                        }
+                    } else {
+                        body_text
+                    }
+                } else {
+                    format!("HTTP {}", status_val)
+                };
+
+                let status_str = match status_val {
+                    401 | 403 => "auth_error",
+                    429 => "quota_error",
+                    404 => "model_error",
+                    _ => "error",
+                };
+
+                ProbeResult {
+                    id: model_id,
+                    status: status_str.to_string(),
+                    latency_ms: latency,
+                    error_hint: Some(hint),
+                }
+            }
+        }
+        Err(e) => {
+            let error_str = e.to_string();
+            let is_timeout = e.is_timeout() || error_str.contains("timeout") || error_str.contains("timed out");
+            ProbeResult {
+                id: model_id,
+                status: if is_timeout { "timeout".to_string() } else { "error".to_string() },
+                latency_ms: latency,
+                error_hint: Some(error_str),
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn ai_probe_models(
+    app: tauri::AppHandle,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    provider: String,
+    single_model: Option<String>,
+) -> Result<Vec<ProbeResult>, String> {
+    let models = if let Some(m) = single_model {
+        let trimmed = m.trim();
+        if !trimmed.is_empty() {
+            vec![ProviderModel {
+                id: trimmed.to_string(),
+                name: None,
+                source: provider.clone(),
+            }]
+        } else {
+            ai_list_models(api_key.clone(), base_url.clone(), provider.clone()).await?
+        }
+    } else {
+        ai_list_models(api_key.clone(), base_url.clone(), provider.clone()).await?
+    };
+    let total = models.len();
+    let mut done = 0;
+    let mut results = Vec::new();
+
+    let _ = app.emit("ai:probe_progress", ProbeProgress {
+        total,
+        done: 0,
+        current_model: "".to_string(),
+    });
+
+    let mut stream = futures::stream::iter(models)
+        .map(|m| {
+            let api_key = api_key.clone();
+            let base_url = base_url.clone();
+            let provider = provider.clone();
+            async move {
+                probe_single_model(m.id, api_key, base_url, provider).await
+            }
+        })
+        .buffer_unordered(5);
+
+    while let Some(res) = stream.next().await {
+        done += 1;
+        let _ = app.emit("ai:probe_progress", ProbeProgress {
+            total,
+            done,
+            current_model: res.id.clone(),
+        });
+        results.push(res);
+    }
+
+    Ok(results)
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct ClassifyResult {
+    pub tier: String,
+    pub confidence: f32,
+    pub reason: String,
+    pub overrode_frontend: bool,
+}
+
+#[tauri::command]
+pub fn ai_classify_request(
+    text: String,
+    frontend_tier: String,
+) -> ClassifyResult {
+    let text_lower = text.to_lowercase();
+    let word_count = text.split_whitespace().count();
+
+    // Keywords for COMPLEX tier
+    let complex_keywords = [
+        "debug", "refactor", "optimize", "architect", "database", "migration", 
+        "security", "performance", "concurrency", "thread", "memory leak", 
+        "race condition", "deadlock", "algorithm", "complex", "robust", 
+        "implementation", "integration", "mathematics", "calculate", "prove",
+        "formula", "equation", "statistics", "machine learning", "deep learning"
+    ];
+
+    // Keywords for MEDIUM tier
+    let medium_keywords = [
+        "explain", "how to", "what is", "difference between", "generate",
+        "create a simple", "write a function", "help me", "review", "test case",
+        "mock", "parse", "format", "convert"
+    ];
+
+    let mut complex_score = 0;
+    let mut medium_score = 0;
+
+    for kw in complex_keywords.iter() {
+        if text_lower.contains(kw) {
+            complex_score += 2;
+        }
+    }
+
+    for kw in medium_keywords.iter() {
+        if text_lower.contains(kw) {
+            medium_score += 1;
+        }
+    }
+
+    // Code blocks indicator
+    if text.contains("```") || text.contains("fn ") || text.contains("def ") || text.contains("class ") || text.contains("import ") {
+        complex_score += 3;
+    }
+
+    // Question marks and sentences structure
+    let sentence_count = text.split(|c| c == '.' || c == '?' || c == '!').filter(|s| !s.trim().is_empty()).count();
+    if sentence_count > 4 {
+        complex_score += 1;
+    }
+
+    // Word count signals
+    let tier = if word_count > 80 || complex_score >= 4 {
+        "complex"
+    } else if word_count > 20 || complex_score >= 2 || medium_score >= 2 {
+        "medium"
+    } else {
+        "simple"
+    };
+
+    let overrode_frontend = tier != frontend_tier;
+    let confidence = if overrode_frontend { 0.85 } else { 0.95 };
+
+    let reason = format!(
+        "Rust analysis: words={}, sentences={}, complex_score={}, medium_score={}.",
+        word_count, sentence_count, complex_score, medium_score
+    );
+
+    ClassifyResult {
+        tier: tier.to_string(),
+        confidence,
+        reason,
+        overrode_frontend,
     }
 }
 
@@ -1393,19 +1977,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_file() {
-        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml"})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("read_file", json!({"path": "Cargo.toml"})), ".", false).await.unwrap();
         assert!(r.contains("[package]"));
     }
 
     #[tokio::test]
     async fn test_read_file_offset() {
-        let r = execute_tool(&tc("read_file", json!({"path": "Cargo.toml", "offset": 0, "limit": 3})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("read_file", json!({"path": "Cargo.toml", "offset": 0, "limit": 3})), ".", false).await.unwrap();
         assert!(r.lines().count() <= 3);
     }
 
     #[tokio::test]
     async fn test_read_file_not_found() {
-        let r = execute_tool(&tc("read_file", json!({"path": "_no_such_file_69"})), ".", false).await;
+        let r = execute_tool(None, &tc("read_file", json!({"path": "_no_such_file_69"})), ".", false).await;
         assert!(r.is_err());
     }
 
@@ -1413,9 +1997,9 @@ mod tests {
     async fn test_write_edit_cycle() {
         let p = "_test_we.txt";
         let _ = std::fs::remove_file(p);
-        execute_tool(&tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".", false).await.unwrap();
+        execute_tool(None, &tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".", false).await.unwrap();
         assert!(Path::new(p).exists());
-        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".", false).await.unwrap();
         assert!(r.contains("Replaced"));
         let c = std::fs::read_to_string(p).unwrap();
         assert!(c.contains("baz"));
@@ -1427,7 +2011,7 @@ mod tests {
     async fn test_write_creates_dirs() {
         let p = "_test_dir_nested/f/a.txt";
         let _ = std::fs::remove_dir_all("_test_dir_nested");
-        execute_tool(&tc("write_file", json!({"path": p, "content": "x"})), ".", false).await.unwrap();
+        execute_tool(None, &tc("write_file", json!({"path": p, "content": "x"})), ".", false).await.unwrap();
         assert!(Path::new(p).exists());
         let _ = std::fs::remove_dir_all("_test_dir_nested");
     }
@@ -1436,7 +2020,7 @@ mod tests {
     async fn test_edit_not_found_errs() {
         let p = "_test_ef.txt";
         std::fs::write(p, "hello").unwrap();
-        let r = execute_tool(&tc("edit", json!({"path": p, "old_string": "nope", "new_string": "x"})), ".", false).await;
+        let r = execute_tool(None, &tc("edit", json!({"path": p, "old_string": "nope", "new_string": "x"})), ".", false).await;
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("old_string not found"));
         let _ = std::fs::remove_file(p);
@@ -1444,43 +2028,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_grep() {
-        let r = execute_tool(&tc("grep", json!({"pattern": "tauri", "root": "."})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("grep", json!({"pattern": "tauri", "root": "."})), ".", false).await.unwrap();
         assert!(r.contains("tauri"));
     }
 
     #[tokio::test]
     async fn test_glob() {
-        let r = execute_tool(&tc("glob", json!({"pattern": "Cargo.toml", "root": "."})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("glob", json!({"pattern": "Cargo.toml", "root": "."})), ".", false).await.unwrap();
         assert!(r.contains("Cargo.toml"));
     }
 
     #[tokio::test]
     async fn test_list_directory() {
-        let r = execute_tool(&tc("list_directory", json!({"path": "."})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("list_directory", json!({"path": "."})), ".", false).await.unwrap();
         assert!(r.contains("src"));
     }
 
     #[tokio::test]
     async fn test_bash_run() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "echo hello_test_42", "timeout": 10})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("bash_run", json!({"command": "echo hello_test_42", "timeout": 10})), ".", false).await.unwrap();
         assert!(r.contains("hello_test_42"));
     }
 
     #[tokio::test]
     async fn test_bash_run_timeout() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "ping -n 10 127.0.0.1", "timeout": 2})), ".", false).await;
+        let r = execute_tool(None, &tc("bash_run", json!({"command": "ping -n 10 127.0.0.1", "timeout": 2})), ".", false).await;
         assert!(r.is_err() || r.unwrap().contains("timed out"));
     }
 
     #[tokio::test]
     async fn test_bash_run_failure() {
-        let r = execute_tool(&tc("bash_run", json!({"command": "exit 1", "timeout": 5})), ".", false).await.unwrap();
+        let r = execute_tool(None, &tc("bash_run", json!({"command": "exit 1", "timeout": 5})), ".", false).await.unwrap();
         assert!(r.contains("exit code"));
     }
 
     #[tokio::test]
     async fn test_unknown_tool() {
-        let r = execute_tool(&tc("foobar", json!({})), ".", false).await;
+        let r = execute_tool(None, &tc("foobar", json!({})), ".", false).await;
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("Unknown tool"));
     }
@@ -1492,6 +2076,7 @@ mod tests {
             base_url: None, api_key: None, capabilities: vec![],
             temperature: None, system_prompt: Some("custom".into()),
             persona_id: Some("coder".into()), built_in: true,
+            cached_models: vec![], models_synced_at: None,
         };
         let sp = resolve_system_prompt(&agent);
         assert!(sp.contains("expert software engineer"));
@@ -1504,6 +2089,7 @@ mod tests {
             base_url: None, api_key: None, capabilities: vec![],
             temperature: None, system_prompt: Some("custom prompt".into()),
             persona_id: None, built_in: false,
+            cached_models: vec![], models_synced_at: None,
         };
         let sp = resolve_system_prompt(&agent);
         assert_eq!(sp, "custom prompt");
@@ -1516,6 +2102,7 @@ mod tests {
             base_url: None, api_key: None, capabilities: vec![],
             temperature: None, system_prompt: None,
             persona_id: None, built_in: false,
+            cached_models: vec![], models_synced_at: None,
         };
         let sp = resolve_system_prompt(&agent);
         assert_eq!(sp, "");
@@ -1632,6 +2219,8 @@ mod tests {
             system_prompt: None,
             persona_id: Some("coder".into()),
             built_in: true,
+            cached_models: vec![],
+            models_synced_at: None,
         };
         let messages = vec![
             ChatMessage { role: "user".into(), content: "Read Cargo.toml and tell me the package name.".into(), display_content: None },

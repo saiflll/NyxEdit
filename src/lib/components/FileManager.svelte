@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { currentDir, type FileEntry } from "../stores.svelte";
   import { open, ask } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
@@ -439,10 +440,40 @@
     return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="${c}" stroke-width="1.5" fill="${c}" fill-opacity="0.05"/><path d="M9 12l3 2 3-2" stroke="${c}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
   }
 
+  async function refreshAll() {
+    if (!currentPath) return;
+    isLoading = true;
+    try {
+      rootEntries = await loadDir(currentPath);
+      // Reload expanded directories
+      for (const dir of expandedDirs) {
+        const children = await loadDir(dir);
+        childCache.set(dir, children);
+      }
+      childCache = new Map(childCache);
+    } catch (e) {
+      console.error("Failed to auto-refresh directory tree", e);
+    } finally {
+      isLoading = false;
+    }
+  }
+
   let initialLoaded = $state(false);
   onMount(() => {
     initialLoaded = true;
     if (currentPath) loadRoot();
+
+    const unsubFileChangedPromise = listen("ai:file_changed", () => {
+      refreshAll();
+    });
+    const unsubToolResultPromise = listen("ai:tool_result", () => {
+      refreshAll();
+    });
+
+    return () => {
+      unsubFileChangedPromise.then(unsub => unsub());
+      unsubToolResultPromise.then(unsub => unsub());
+    };
   });
 
   $effect(() => {

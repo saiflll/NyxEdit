@@ -22,6 +22,8 @@ export type Agent = {
   system_prompt: string | null;
   persona_id: string | null;
   built_in: boolean;
+  cached_models?: string[];
+  models_synced_at?: string;
 };
 
 export type AiToolCallEvent = {
@@ -40,6 +42,7 @@ export type ChatMessage = {
   role: string;
   content: string;
   display_content?: string;
+  fileChanges?: { path: string; oldContent: string; newContent: string }[];
 };
 
 export type ChatSession = {

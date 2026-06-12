@@ -6,6 +6,7 @@
   import { open as openShell } from "@tauri-apps/plugin-shell";
   import SplitTerminal from "$lib/components/SplitTerminal.svelte";
   import AIChat from "$lib/components/AIChat.svelte";
+  import AIDiffTab from "$lib/components/AIDiffTab.svelte";
   import GitStatus from "$lib/components/GitStatus.svelte";
   import FileManager from "$lib/components/FileManager.svelte";
   import CodeEditor from "$lib/components/CodeEditor.svelte";
@@ -29,7 +30,7 @@
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
   import { initIdle } from "$lib/idle.svelte";
 
-  type TabType = "file" | "settings" | "setup" | "terminal" | "preview" | "ssh_session" | "private" | "api_client" | "db_query";
+  type TabType = "file" | "settings" | "setup" | "terminal" | "preview" | "ssh_session" | "private" | "api_client" | "db_query" | "diff" | "ai_chat";
   type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | null;
 
   let proxyPort = $state(0);
@@ -50,6 +51,7 @@
     requestId?: string; // for api_client tabs
     initialCommand?: string; // for terminal tabs
     connectionId?: string; // for db_query tabs
+    diffFiles?: { path: string; oldContent: string; newContent: string }[]; // for diff tabs
   };
 
   // ─── Sidebar ───────────────────────────────────
@@ -89,6 +91,42 @@
 
   // ─── Floating Panels ──────────────────────────
   let showFloatingAi = $state(false);
+  let aiChatRef = $state<any>();
+  function closeAiChat() {
+    showFloatingAi = false;
+    if (aiChatRef) {
+      aiChatRef.clearChat();
+    }
+  }
+  function minimizeAiChat() {
+    showFloatingAi = false;
+  }
+  function openAiChatTab() {
+    showFloatingAi = false;
+    const existing = tabs.find(t => t.type === "ai_chat");
+    if (existing) {
+      activeTabId = existing.id;
+      return;
+    }
+    const id = "tab-ai-" + Date.now().toString(36);
+    tabs = [...tabs, { id, type: "ai_chat", label: "AI Chat" }];
+    activeTabId = id;
+  }
+  function handleOpenAiInTab(content: string, label: string) {
+    const id = "tab-ai-plan-" + Date.now().toString(36);
+    tabs = [...tabs, { id, type: "file", label: label || "AI Plan", filePath: "", fileContent: content }];
+    activeTabId = id;
+  }
+  function handleOpenDiffTab(msgIdx: number, changes: { path: string; oldContent: string; newContent: string }[]) {
+    const id = `diff-msg-${msgIdx}`;
+    const existing = tabs.find(t => t.id === id);
+    if (existing) {
+      activeTabId = existing.id;
+      return;
+    }
+    tabs = [...tabs, { id, type: "diff", label: `Diff: AI Msg #${msgIdx + 1}`, diffFiles: changes }];
+    activeTabId = id;
+  }
   let showFloatingRunner = $state(false);
   let showLogs = $state(false);
 
@@ -230,10 +268,10 @@
       tabs = [...tabs, { id, type: "terminal" as TabType, label: "Terminal" }];
       termTab = tabs[tabs.length - 1];
     }
-    activeTabId = termTab.id;
     addLog(`Running ${type} setup script...`);
+    const isWin = navigator.userAgent.toLowerCase().includes("win");
     // Write the script command into the terminal via invoke
-    invoke("pty_write", { sessionId: "term-1", data: `${s.cmd} ${s.args.join(" ")}\n` }).catch(e => console.error(e));
+    invoke("pty_write", { sessionId: "term-1", data: `${s.cmd} ${s.args.join(" ")}${isWin ? "\r" : "\n"}` }).catch(e => console.error(e));
   }
 
   // ─── Extensions ──────────────────────────────
@@ -303,7 +341,8 @@
       if (ext.scripts?.install) {
         const termTab = tabs.find(t => t.type === "terminal");
         if (termTab) activeTabId = termTab.id;
-        invoke("pty_write", { sessionId: "term-1", data: ext.scripts.install + "\n" }).catch(() => {});
+        const isWin = navigator.userAgent.toLowerCase().includes("win");
+        invoke("pty_write", { sessionId: "term-1", data: ext.scripts.install + (isWin ? "\r" : "\n") }).catch(() => {});
       }
       extMsg = `Installed: ${ext.name}`;
       extUrl = "";
@@ -317,7 +356,8 @@
     const ext = extensions.find(e => e.id === id);
     if (!ext) return;
     if (ext.scripts?.uninstall) {
-      invoke("pty_write", { sessionId: "term-1", data: ext.scripts.uninstall + "\n" }).catch(() => {});
+      const isWin = navigator.userAgent.toLowerCase().includes("win");
+      invoke("pty_write", { sessionId: "term-1", data: ext.scripts.uninstall + (isWin ? "\r" : "\n") }).catch(() => {});
     }
     removeExtensionTheme(ext);
     if (ext.icons) {
@@ -349,6 +389,8 @@
     ssh_session: "SSH", private: "Private",
     api_client: "API Client",
     db_query: "DB Query",
+    diff: "AI Diff",
+    ai_chat: "AI Chat",
   };
   const TAB_ICONS: Record<TabType, string> = {
     file: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
@@ -360,6 +402,8 @@
     private: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
     api_client: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
     db_query: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+    diff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>`,
+    ai_chat: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
   };
 
   function normalizeUrl(url: string): string {
@@ -723,7 +767,8 @@
       action: () => {
         const entry = ctxFilePath!;
         const dir = entry.includes(".") ? entry.substring(0, entry.lastIndexOf("\\")) : entry;
-        invoke("pty_write", { sessionId: "term-1", data: `cd "${dir}"\n` }).catch(() => {});
+        const isWin = navigator.userAgent.toLowerCase().includes("win");
+        invoke("pty_write", { sessionId: "term-1", data: `cd "${dir}"${isWin ? "\r" : "\n"}` }).catch(() => {});
         primaryCwd = dir;
         currentDir.set(dir);
       },
@@ -1196,6 +1241,17 @@
             <PostmanClient isSidebar={false} activeRequestId={tab.requestId ?? null} onOpenRequest={() => {}} />
           {:else if tab.type === "db_query"}
             <DatabaseClient isSidebar={false} activeConnectionId={tab.connectionId ?? null} onOpenQuery={() => {}} />
+          {:else if tab.type === "diff"}
+            {#if tab.diffFiles}
+              <AIDiffTab diffFiles={tab.diffFiles} onCloseTab={() => { tabs = tabs.filter(t => t.id !== tab.id); if (activeTabId === tab.id) activeTabId = tabs[0]?.id ?? ""; }} />
+            {/if}
+          {:else if tab.type === "ai_chat"}
+            <AIChat
+              onOpenDiff={handleOpenDiffTab}
+              onMinimize={() => { tabs = tabs.filter(t => t.id !== tab.id); if (activeTabId === tab.id) activeTabId = tabs[0]?.id ?? ""; }}
+              onClose={() => { tabs = tabs.filter(t => t.id !== tab.id); if (activeTabId === tab.id) activeTabId = tabs[0]?.id ?? ""; }}
+              onOpenInTab={handleOpenAiInTab}
+            />
           {/if}
         </div>
       {/each}
@@ -1236,15 +1292,16 @@
   </footer>
 
   <!-- Floating AI Chat -->
-  {#if showFloatingAi}
-    <div class="float-panel float-ai">
-      <div class="float-header">
-        <span>AI Chat</span>
-        <button class="float-close" onclick={() => (showFloatingAi = false)} aria-label="Close">&times;</button>
-      </div>
-      <div class="float-body"><AIChat /></div>
-    </div>
-  {/if}
+  <div class="float-panel float-ai" class:hidden={!showFloatingAi}>
+    <div class="float-body"><AIChat
+      bind:this={aiChatRef}
+      onOpenDiff={handleOpenDiffTab}
+      onMinimize={minimizeAiChat}
+      onClose={closeAiChat}
+      onFull={openAiChatTab}
+      onOpenInTab={handleOpenAiInTab}
+    /></div>
+  </div>
 
   <!-- Floating Runner -->
   {#if showFloatingRunner}
@@ -1637,5 +1694,8 @@
   }
   .tab-panel {
     background: transparent !important;
+  }
+  .hidden {
+    display: none !important;
   }
 </style>

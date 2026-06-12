@@ -10,15 +10,16 @@
     path: string;
     isEdit: boolean;
     diff: DiffLine[];
+    fullHeight?: boolean;
   }
 
-  let { path, isEdit, diff }: Props = $props();
+  let { path, isEdit, diff, fullHeight = false }: Props = $props();
 
   // Extract filename
   let fileName = $derived(path.split(/[\\/]/).pop() || path);
 </script>
 
-<div class="diff-viewer">
+<div class="diff-viewer" class:full-height={fullHeight}>
   <div class="diff-header">
     <span class="diff-icon">{isEdit ? "✏️" : "🆕"}</span>
     <div class="diff-meta">
@@ -56,6 +57,14 @@
     margin: 4px 0;
     max-height: 300px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  }
+
+  .diff-viewer.full-height {
+    max-height: none;
+    flex: 1;
+    margin: 0;
+    box-shadow: none;
+    height: 100%;
   }
 
   .diff-header {

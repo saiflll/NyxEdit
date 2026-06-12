@@ -14,8 +14,12 @@
 
   let terminalIds = $state(["term-1"]);
   let sessions = $state<Record<string, string>>({});
-  let cols = $state(1);
+  let cols = $derived(Math.ceil(Math.sqrt(terminalIds.length)));
   let activeSessionId = $state<string | null>(null);
+  let terminalCounter = 1;
+  let labels = $state<Record<string, string>>({
+    "term-1": "0",
+  });
 
   $effect(() => {
     const unsub = activeTerminalSessionId.subscribe((val) => {
@@ -30,18 +34,15 @@
   });
   let inputBuffers = $state<Record<string, string>>({});
 
-  $effect(() => {
-    cols = Math.ceil(Math.sqrt(terminalIds.length));
-  });
-
   // Sync workspace → terminal: when cwd prop changes externally, send cd
   $effect(() => {
     if (cwd && cwd !== prevCwd && terminalIds.length > 0) {
       const primaryId = primaryTerminalId();
       if (primaryId && sessions[primaryId]) {
+        const isWin = navigator.userAgent.toLowerCase().includes("win");
         invoke("pty_write", {
           sessionId: sessions[primaryId],
-          data: `cd "${cwd}"\n`,
+          data: `cd "${cwd}"${isWin ? "\r" : "\n"}`,
         }).catch(() => {});
         cwds[primaryId] = cwd;
         cwds = { ...cwds };
@@ -88,11 +89,25 @@
   }
 
   function addTerminal() {
-    terminalIds = [...terminalIds, `term-${terminalIds.length + 1}`];
+    const nextId = `term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const nextLabel = String(terminalCounter++);
+    labels[nextId] = nextLabel;
+    labels = { ...labels };
+    terminalIds = [...terminalIds, nextId];
   }
   function removeTerminal(id: string) {
     if (terminalIds.length <= 1) return;
     terminalIds = terminalIds.filter((t) => t !== id);
+    
+    // Clean up closed terminal states
+    delete sessions[id];
+    delete cwds[id];
+    delete inputBuffers[id];
+    delete labels[id];
+    sessions = { ...sessions };
+    cwds = { ...cwds };
+    inputBuffers = { ...inputBuffers };
+    labels = { ...labels };
   }
   function handleSessionCreated(id: string, sessionId: string) {
     sessions[id] = sessionId;
@@ -103,7 +118,8 @@
     // Run initial command if it is the primary terminal session
     if (id === primaryTerminalId() && initialCommand) {
       setTimeout(() => {
-        invoke("pty_write", { sessionId, data: initialCommand + "\n" }).catch(
+        const isWin = navigator.userAgent.toLowerCase().includes("win");
+        invoke("pty_write", { sessionId, data: initialCommand + (isWin ? "\r" : "\n") }).catch(
           (e) => console.error(e),
         );
       }, 300);
@@ -132,16 +148,40 @@
     </button>
   </div>
   <div class="tiling-grid" style="grid-template-columns: repeat({cols}, 1fr)">
-    {#each terminalIds as id (id)}
+    {#each terminalIds as id, i (id)}
       {@const isActive = sessions[id] === activeSessionId}
       <div class="tiling-cell" class:cell-active={isActive}>
-        <div class="tiling-cell-header" class:header-active={isActive}>
-          <span class="tiling-cell-label" class:active={isActive}>{id}</span>
-          <div class="tiling-cell-actions">
+        <div class="tiling-cell-actions">
+          <button
+            class="tiling-cell-btn"
+            onclick={() => addTerminal()}
+            title="Split"
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              ><rect x="3" y="3" width="7" height="7" /><rect
+                x="14"
+                y="3"
+                width="7"
+                height="7"
+              /><rect x="14" y="14" width="7" height="7" /><rect
+                x="3"
+                y="14"
+                width="7"
+                height="7"
+              /></svg
+            >
+          </button>
+          {#if terminalIds.length > 1}
             <button
               class="tiling-cell-btn"
-              onclick={() => addTerminal()}
-              title="Split"
+              onclick={() => removeTerminal(id)}
+              title="Close"
             >
               <svg
                 width="11"
@@ -150,46 +190,20 @@
                 fill="none"
                 stroke="currentColor"
                 stroke-width="2"
-                ><rect x="3" y="3" width="7" height="7" /><rect
-                  x="14"
-                  y="3"
-                  width="7"
-                  height="7"
-                /><rect x="14" y="14" width="7" height="7" /><rect
-                  x="3"
-                  y="14"
-                  width="7"
-                  height="7"
+                ><line x1="18" y1="6" x2="6" y2="18" /><line
+                  x1="6"
+                  y1="6"
+                  x2="18"
+                  y2="18"
                 /></svg
               >
             </button>
-            {#if terminalIds.length > 1}
-              <button
-                class="tiling-cell-btn"
-                onclick={() => removeTerminal(id)}
-                title="Close"
-              >
-                <svg
-                  width="11"
-                  height="11"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  ><line x1="18" y1="6" x2="6" y2="18" /><line
-                    x1="6"
-                    y1="6"
-                    x2="18"
-                    y2="18"
-                  /></svg
-                >
-              </button>
-            {/if}
-          </div>
+          {/if}
         </div>
         <div class="tiling-cell-body">
           <Terminal
             sessionId={sessions[id]}
+            label={labels[id] || "0"}
             onReady={(sid: string) => handleSessionCreated(id, sid)}
             onCommand={(sid: string, line: string) => handleCommand(id, line)}
           />
@@ -256,57 +270,34 @@
     min-height: 60px;
     background: transparent;
     transition: border-color 0.15s ease;
+    position: relative;
   }
   .tiling-cell.cell-active {
     border-color: var(--accent-blue);
   }
-  .tiling-cell-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1px 8px;
-    background: var(--glass-bg, var(--bg-secondary));
-    border-bottom: 1px solid var(--glass-border, var(--border-subtle));
-    font-size: var(--fs-10);
-    color: var(--text-muted);
-    user-select: none;
-    flex-shrink: 0;
-  }
-  .tiling-cell-header.header-active {
-    background: color-mix(in srgb, var(--accent-blue) 5%, var(--glass-bg, var(--bg-secondary)));
-  }
-  .tiling-cell-label {
-    font-family: monospace;
-    display: inline-flex;
-    align-items: center;
-  }
-  .tiling-cell-label.active {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-  .tiling-cell-label.active::before {
-    content: "";
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    background: var(--accent-blue);
-    border-radius: 50%;
-    margin-right: 6px;
-  }
   .tiling-cell-actions {
     display: flex;
     gap: 1px;
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.12s ease;
   }
+  .tiling-cell:hover .tiling-cell-actions { opacity: 0.6; }
+  .tiling-cell-actions:hover { opacity: 1 !important; }
   .tiling-cell-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: none;
-    border: none;
+    background: var(--glass-bg, var(--bg-secondary));
+    border: 1px solid var(--border-subtle);
     color: var(--text-muted);
-    padding: 1px 3px;
+    padding: 1px 4px;
     cursor: pointer;
-    border-radius: 3px;
+    border-radius: 4px;
+    backdrop-filter: blur(4px);
   }
   .tiling-cell-btn:hover {
     color: var(--text-primary);

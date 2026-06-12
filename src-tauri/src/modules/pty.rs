@@ -65,6 +65,7 @@ impl PtyManager {
         cwd: Option<&str>,
         rows: u16,
         cols: u16,
+        label: Option<&str>,
     ) -> Result<(String, Receiver<String>), String> {
         let pty_system = native_pty_system();
         let size = PtySize {
@@ -96,10 +97,18 @@ impl PtyManager {
                 "/bin/bash"
             });
             if cfg!(target_os = "windows") {
+                let prompt_fn = if let Some(lbl) = label {
+                    format!(
+                        r#"function prompt {{ $esc = [char]27; $fg_accent = $esc + "[94m"; $fg_path = $esc + "[96m"; $fg_arrow = $esc + "[92m"; $reset = $esc + "[0m"; $p = $ExecutionContext.SessionState.Path.CurrentLocation.Path; $h = $env:USERPROFILE; if ($p.StartsWith($h)) {{ $p = '~' + $p.Substring($h.Length) }}; $p = $p.Replace([char]92, '/'); return $fg_accent + "[{}]" + $reset + $fg_path + $p + $reset + $fg_arrow + ">" + $reset + " " }}"#,
+                        lbl
+                    )
+                } else {
+                    r#"function prompt { $p = $ExecutionContext.SessionState.Path.CurrentLocation.Path; $h = [System.Environment]::GetFolderPath('UserProfile'); if ($p.StartsWith($h)) { $p = '~' + $p.Substring($h.Length) }; $g = ''; if (Get-Command git -ErrorAction SilentlyContinue) { $s = git branch --show-current 2>$null; if ($s) { $g = ' git:(' + $s.Trim() + ')' } }; $esc = [char]27; $green = "$esc[92m"; $blue = "$esc[94m"; $gray = "$esc[90m"; $cyan = "$esc[96m"; $yellow = "$esc[93m"; $magenta = "$esc[95m"; $reset = "$esc[0m"; $u = $env:USERNAME; "$green➜  $blue$u$reset $gray@$reset $cyan$u-pc$reset $yellow$p$reset$magenta$g$reset $green❯$reset " }"#.to_string()
+                };
                 cb.args(&[
                     "-NoExit",
                     "-Command",
-                    r#"function prompt { $p = $ExecutionContext.SessionState.Path.CurrentLocation.Path; $h = [System.Environment]::GetFolderPath('UserProfile'); if ($p.StartsWith($h)) { $p = '~' + $p.Substring($h.Length) }; $g = ''; if (Get-Command git -ErrorAction SilentlyContinue) { $s = git branch --show-current 2>$null; if ($s) { $g = ' git:(' + $s.Trim() + ')' } }; $esc = [char]27; $green = "$esc[92m"; $blue = "$esc[94m"; $gray = "$esc[90m"; $cyan = "$esc[96m"; $yellow = "$esc[93m"; $magenta = "$esc[95m"; $reset = "$esc[0m"; $u = $env:USERNAME; "$green➜  $blue$u$reset $gray@$reset $cyan$u-pc$reset $yellow$p$reset$magenta$g$reset $green❯$reset " }"#,
+                    &prompt_fn,
                 ]);
             }
             cb
@@ -237,9 +246,10 @@ pub fn pty_open(
     cwd: Option<String>,
     rows: u16,
     cols: u16,
+    label: Option<String>,
 ) -> Result<String, String> {
     let (session_id, rx) =
-        state.create_session(shell.as_deref(), cwd.as_deref(), rows, cols)?;
+        state.create_session(shell.as_deref(), cwd.as_deref(), rows, cols, label.as_deref())?;
 
     let app_clone = app.clone();
     let sid = session_id.clone();

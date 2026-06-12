@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import type { Agent, AgentPersona } from "../stores.svelte";
   const PROVIDERS = [
     { id: "openai", name: "OpenAI", needsApiKey: true, defaultUrl: "https://api.openai.com/v1" },
@@ -11,10 +12,11 @@
     { id: "xai", name: "xAI (Grok)", needsApiKey: true, defaultUrl: "https://api.x.ai/v1" },
     { id: "vercel", name: "Vercel AI Gateway", needsApiKey: true, defaultUrl: "https://ai-gateway.vercel.sh/v1" },
     { id: "ollama", name: "Ollama (Local)", needsApiKey: false, defaultUrl: "http://localhost:11434/v1" },
+    { id: "other", name: "Other / Custom URL", needsApiKey: true, defaultUrl: "" },
   ];
   // ─── Agent state ──────────────────────────────
-  import { loadNyxConfig, saveNyxConfig } from "$lib/nyxConfig";
-  import { currentDir, addToast } from "../stores.svelte";
+  import { loadNyxConfig, saveNyxConfig, getActiveSettings, saveGlobalNyxConfig } from "$lib/nyxConfig";
+  import { currentDir, addToast, agents as globalAgents } from "../stores.svelte";
 
   let globalInstructions = $state("");
   let skillRead = $state(true);
@@ -33,28 +35,13 @@
 
   async function loadGlobalSettings() {
     try {
-      if (workspaceDir) {
-        const config = await loadNyxConfig("style_coding.json", {
-          globalInstructions: "",
-          skillRead: true,
-          skillWrite: true,
-          skillTerminal: true
-        });
-        globalInstructions = config.globalInstructions ?? "";
-        skillRead = config.skillRead ?? true;
-        skillWrite = config.skillWrite ?? true;
-        skillTerminal = config.skillTerminal ?? true;
-      } else {
-        globalInstructions = localStorage.getItem("nyxedit-global-instructions") || "";
-        skillRead = localStorage.getItem("nyxedit-skill-read") !== "false";
-        skillWrite = localStorage.getItem("nyxedit-skill-write") !== "false";
-        skillTerminal = localStorage.getItem("nyxedit-skill-terminal") !== "false";
-      }
-    } catch {
-      globalInstructions = localStorage.getItem("nyxedit-global-instructions") || "";
-      skillRead = localStorage.getItem("nyxedit-skill-read") !== "false";
-      skillWrite = localStorage.getItem("nyxedit-skill-write") !== "false";
-      skillTerminal = localStorage.getItem("nyxedit-skill-terminal") !== "false";
+      const active = await getActiveSettings();
+      globalInstructions = active.globalInstructions;
+      skillRead = active.skillRead;
+      skillWrite = active.skillWrite;
+      skillTerminal = active.skillTerminal;
+    } catch (e) {
+      console.error("Load settings error:", e);
     }
   }
 
@@ -65,13 +52,17 @@
       localStorage.setItem("nyxedit-skill-write", String(skillWrite));
       localStorage.setItem("nyxedit-skill-terminal", String(skillTerminal));
 
+      const settingsData = {
+        globalInstructions,
+        skillRead,
+        skillWrite,
+        skillTerminal
+      };
+
+      await saveGlobalNyxConfig(settingsData);
+
       if (workspaceDir) {
-        await saveNyxConfig("style_coding.json", {
-          globalInstructions,
-          skillRead,
-          skillWrite,
-          skillTerminal
-        });
+        await saveNyxConfig("style_coding.json", settingsData);
       }
       savedStatus = "Saved successfully!";
       addToast("Coding style settings saved", "success");
@@ -95,9 +86,15 @@
   let formModel = $state("");
   let formTemperature = $state(0.7);
   let formSystemPrompt = $state("");
-  let fetchedModels = $state<string[]>([]);
   let isFetching = $state(false);
   let fetchError = $state("");
+
+  // New model sync & probing states
+  let showAdvanced = $state(false);
+  let probeResults = $state<any[]>([]);
+  let isProbing = $state(false);
+  let probeProgress = $state({ total: 0, done: 0, currentModel: "" });
+  let unlistenProbeProgress: UnlistenFn | null = null;
 
   let activeProviderDef = $derived(PROVIDERS.find(p => p.id === formProvider) || PROVIDERS[0]);
 
@@ -112,6 +109,7 @@
   async function loadAgents() {
     try {
       agents = await invoke<Agent[]>("ai_list_agents");
+      globalAgents.set(agents);
     } catch (e) {
       console.error("Failed to load agents:", e);
     }
@@ -123,12 +121,14 @@
     formPersonaId = "";
     formProvider = "openai";
     formApiKey = "";
-    formBaseUrl = "";
+    formBaseUrl = "https://api.openai.com/v1";
     formModel = "";
     formTemperature = 0.7;
     formSystemPrompt = "";
-    fetchedModels = [];
     fetchError = "";
+    probeResults = [];
+    isProbing = false;
+    showAdvanced = false;
   }
 
   async function startEdit(a: Agent) {
@@ -141,18 +141,28 @@
     formModel = a.model;
     formTemperature = a.temperature ?? 0.7;
     formSystemPrompt = a.system_prompt || "";
-    fetchedModels = [];
     fetchError = "";
+    probeResults = a.cached_models ? a.cached_models.map(m => ({ id: m, status: "ok", latency_ms: 0 })) : [];
+    isProbing = false;
+    showAdvanced = false;
   }
 
   function cancelEdit() {
     editingId = null;
     showForm = false;
+    if (unlistenProbeProgress) {
+      unlistenProbeProgress();
+      unlistenProbeProgress = null;
+    }
   }
 
   function onProviderChange() {
-    formBaseUrl = activeProviderDef.defaultUrl || "";
-    fetchedModels = [];
+    if (activeProviderDef.defaultUrl) {
+      formBaseUrl = activeProviderDef.defaultUrl;
+    } else {
+      formBaseUrl = "";
+    }
+    probeResults = [];
     formModel = "";
     fetchError = "";
   }
@@ -162,26 +172,54 @@
     formSystemPrompt = p?.instructions || "";
   }
 
-  async function fetchModels() {
-    isFetching = true;
+  async function syncAndProbeModels() {
+    isProbing = true;
+    probeResults = [];
     fetchError = "";
+    probeProgress = { total: 0, done: 0, currentModel: "" };
+    
+    if (unlistenProbeProgress) {
+      unlistenProbeProgress();
+      unlistenProbeProgress = null;
+    }
+    
     try {
-      const provider = formProvider;
-      const baseUrl = activeProviderDef.defaultUrl || formBaseUrl || null;
-      const models = await invoke<{ id: string; source: string }[]>("ai_list_models", {
+      unlistenProbeProgress = await listen<any>("ai:probe_progress", (e) => {
+        probeProgress = {
+          total: e.payload.total,
+          done: e.payload.done,
+          currentModel: e.payload.current_model || "",
+        };
+      });
+      
+      const baseUrl = formBaseUrl.trim() || activeProviderDef.defaultUrl || null;
+      const results = await invoke<any[]>("ai_probe_models", {
         apiKey: formApiKey.trim() || null,
         baseUrl,
-        provider,
+        provider: formProvider,
+        singleModel: formModel.trim() || null,
       });
-      fetchedModels = models.map(m => m.id);
-      if (fetchedModels.length > 0 && !formModel) {
-        formModel = fetchedModels[0];
+      
+      probeResults = results;
+      
+      const verified = results.filter(r => r.status === "ok");
+      if (verified.length > 0) {
+        if (!formModel || !verified.some(v => v.id === formModel)) {
+          formModel = verified[0].id;
+        }
+      } else {
+        fetchError = "No models responded successfully. If your endpoint doesn't support model listing, try entering the model name manually in Advanced Options below and click Sync again.";
       }
     } catch (e: any) {
-      fetchError = typeof e === "string" ? e : e.message || "Failed to fetch models";
-      fetchedModels = [];
+      const errStr = typeof e === "string" ? e : e.message || "Failed to sync models";
+      fetchError = `${errStr}. If your endpoint doesn't support listing models, try entering the model name manually in Advanced Options below and click Sync again.`;
+      probeResults = [];
     } finally {
-      isFetching = false;
+      isProbing = false;
+      if (unlistenProbeProgress) {
+        unlistenProbeProgress();
+        unlistenProbeProgress = null;
+      }
     }
   }
 
@@ -190,17 +228,36 @@
   }
 
   async function saveAgent() {
-    if (!formModel.trim()) return;
-    const baseId = safeId(formModel);
-    const id = editingId || `${formProvider}-${baseId}`;
-    const name = formPersonaId
-      ? `${personas.find(p => p.id === formPersonaId)?.name || formPersonaId} (${formModel})`
-      : `${formProvider} ${formModel}`;
+    // Use a stable, provider-based ID so there's only one agent per provider.
+    // If editing an existing agent, preserve its ID.
+    const providerAgentId = `${formProvider}-agent`;
+    const id = editingId || providerAgentId;
+
+    // Auto-generate a human-friendly name
+    const personaName = formPersonaId
+      ? (personas.find(p => p.id === formPersonaId)?.name || formPersonaId)
+      : null;
+    const providerLabel = PROVIDERS.find(p => p.id === formProvider)?.name || formProvider;
+    const name = personaName ? `${personaName} (${providerLabel})` : providerLabel;
+
+    // Collect verified models from probe; if we have a specific default model chosen, ensure it's first
+    const verifiedModels = probeResults.filter(r => r.status === "ok").map((r: any) => r.id);
+    const defaultModel = formModel.trim() || verifiedModels[0] || "";
+    if (defaultModel && !verifiedModels.includes(defaultModel)) {
+      verifiedModels.unshift(defaultModel);
+    }
+
+    // Must have either a default model set or at least one verified model
+    if (!defaultModel) {
+      fetchError = "Please either run 'Sync Models' or enter a model name in Advanced Options.";
+      return;
+    }
+
     const config: Agent = {
       id,
       name,
       provider: formProvider,
-      model: formModel.trim(),
+      model: defaultModel,
       base_url: formBaseUrl.trim() || null,
       api_key: formApiKey.trim() || null,
       capabilities: [],
@@ -208,6 +265,8 @@
       system_prompt: formSystemPrompt.trim() || null,
       persona_id: formPersonaId.trim() || null,
       built_in: false,
+      cached_models: verifiedModels,
+      models_synced_at: verifiedModels.length > 0 ? new Date().toISOString() : undefined,
     };
     try {
       await invoke("ai_update_agent", { config });
@@ -215,6 +274,7 @@
       cancelEdit();
     } catch (e) {
       console.error("Failed to save agent:", e);
+      fetchError = "Failed to save agent: " + String(e);
     }
   }
 
@@ -692,61 +752,129 @@
               </select>
             </label>
             <label class="form-field">
-              <span>Model</span>
-              <div class="model-input-row">
-                {#if fetchedModels.length > 0}
-                  <select bind:value={formModel}>
-                    {#each fetchedModels as m}
-                      <option value={m}>{m}</option>
-                    {/each}
-                  </select>
-                {:else}
-                  <input bind:value={formModel} placeholder="gpt-4o, claude-sonnet-4, ..." />
+              <span>API Key {#if !activeProviderDef.needsApiKey}<span class="form-hint-inline">(optional for Local LLM)</span>{/if}</span>
+              <input bind:value={formApiKey} type="password" placeholder={activeProviderDef.needsApiKey ? `sk-...` : 'Leave empty for Local LLM'} />
+            </label>
+            <label class="form-field">
+              <span>Base URL
+                {#if formBaseUrl.trim() && activeProviderDef.defaultUrl && formBaseUrl.trim() !== activeProviderDef.defaultUrl}
+                  <span class="form-hint-inline" style="color: var(--accent-green);">✓ custom</span>
                 {/if}
-                <button class="settings-btn settings-btn-sm" onclick={fetchModels} disabled={isFetching} title="Detect models">
-                  {#if isFetching}
-                    <span class="spinner-tiny"></span>
-                  {:else}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                  {/if}
-                </button>
-              </div>
-            </label>
-            <label class="form-field">
-              <span>API Key {#if !activeProviderDef.needsApiKey}<span class="form-hint-inline">(kosongi untuk Local LLM)</span>{/if}</span>
-              <input bind:value={formApiKey} type="password" placeholder={activeProviderDef.needsApiKey ? `sk-...` : 'Kosongi untuk Local LLM'} />
-            </label>
-            <label class="form-field">
-              <span>Base URL</span>
-              <input bind:value={formBaseUrl} placeholder={activeProviderDef.defaultUrl || 'https://...'} />
-            </label>
-            <label class="form-field">
-              <span>Temperature</span>
-              <div class="temp-row">
-                <input type="range" min="0" max="2" step="0.1" bind:value={formTemperature} class="temp-slider" />
-                <span class="temp-label">{formTemperature.toFixed(1)}</span>
-              </div>
+              </span>
+              <input bind:value={formBaseUrl} placeholder={activeProviderDef.defaultUrl || 'https://your-endpoint/v1'} />
             </label>
           </div>
 
+          <!-- Sync Models Button -->
+          <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 8px;">
+            <button 
+              type="button" 
+              class="settings-btn" 
+              style="background: var(--accent-blue); color: var(--bg-primary); padding: 8px 16px; font-weight: 600; font-size: var(--fs-11); width: fit-content;"
+              onclick={syncAndProbeModels}
+              disabled={isProbing}
+            >
+              {#if isProbing}
+                <span class="spinner-tiny" style="border-color: var(--bg-primary); border-top-color: transparent;"></span>
+                Syncing & Probing Models...
+              {:else}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align: middle; margin-right: 4px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                Sync Models
+              {/if}
+            </button>
+
+            {#if isProbing}
+              <div class="probe-progress-container" style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
+                <span style="font-size: var(--fs-10); color: var(--text-secondary); font-weight: 500;">
+                  Probing {probeProgress.done} / {probeProgress.total} models...
+                  {#if probeProgress.currentModel}
+                    <code style="color: var(--accent-blue); font-size: var(--fs-9); margin-left: 6px;">({probeProgress.currentModel})</code>
+                  {/if}
+                </span>
+                <div class="probe-progress-bar-bg" style="width: 100%; height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; border: 1px solid var(--border-subtle);">
+                  <div class="probe-progress-bar-fg" style="height: 100%; background: var(--accent-blue); width: {probeProgress.total > 0 ? (probeProgress.done / probeProgress.total) * 100 : 0}%; transition: width 0.15s ease-out;"></div>
+                </div>
+              </div>
+            {/if}
+          </div>
+
           {#if fetchError}
-            <div class="fetch-error">{fetchError}</div>
+            <div class="fetch-error" style="margin-top: 10px;">{fetchError}</div>
           {/if}
 
-          {#if !formPersonaId}
-            <label class="form-field form-field-full">
-              <span>System Prompt</span>
-              <textarea bind:value={formSystemPrompt} rows={3} placeholder="Optional system instructions for this agent..." class="form-textarea"></textarea>
-            </label>
-          {:else if formSystemPrompt}
-            <div class="form-hint" style="padding:4px 0">System prompt diisi otomatis dari persona yang dipilih.</div>
+          <!-- Verified Models List -->
+          {#if probeResults.filter(r => r.status === "ok").length > 0}
+            <div class="verified-models-container" style="margin: 14px 0; background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px;">
+              <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">Verified Models ({probeResults.filter(r => r.status === "ok").length})</span>
+              <div class="verified-models-chips" style="display: flex; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow-y: auto; padding: 2px;">
+                {#each probeResults.filter(r => r.status === "ok") as model}
+                  <div class="verified-chip" style="display: inline-flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--accent-green) 8%, var(--bg-surface)); border: 1px solid color-mix(in srgb, var(--accent-green) 20%, var(--bg-surface)); border-radius: 12px; padding: 3px 8px; font-size: var(--fs-10); color: var(--text-primary);">
+                    <span style="color: var(--accent-green); font-weight: bold;">✓</span>
+                    <span style="font-family: monospace;">{model.id}</span>
+                    {#if model.latency_ms > 0}
+                      <span style="color: var(--text-muted); font-size: var(--fs-9); margin-left: 2px;">({model.latency_ms}ms)</span>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              
+              <label class="form-field" style="margin-top: 6px;">
+                <span style="font-size: var(--fs-10); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px;">Default Model</span>
+                <select bind:value={formModel} style="width: 100%; margin-top: 4px; background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 10px; font-size: var(--font-size);">
+                  {#each probeResults.filter(r => r.status === "ok") as model}
+                    <option value={model.id}>{model.id}</option>
+                  {/each}
+                </select>
+              </label>
+            </div>
           {/if}
 
-          <div class="form-actions">
-            <span class="form-hint">Nama & ID agent dibuat otomatis</span>
+          <!-- Advanced Collapsible Section -->
+          <div style="margin-top: 14px; border-top: 1px solid var(--border-subtle); padding-top: 10px;">
+            <button 
+              type="button" 
+              class="settings-btn settings-btn-cancel" 
+              style="font-size: var(--fs-10); font-weight: 600; padding: 4px 8px;"
+              onclick={() => showAdvanced = !showAdvanced}
+            >
+              {showAdvanced ? "Hide Advanced Options ▴" : "Show Advanced Options ▾"}
+            </button>
+
+            {#if showAdvanced}
+              <div class="advanced-fields-container" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px; animation: slideDown 0.15s ease-out;">
+                <label class="form-field">
+                  <span>Model Name (Manual Override)</span>
+                  <input bind:value={formModel} placeholder="e.g. qwen-plus, deepseek-chat" style="background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 4px; padding: 6px 10px; font-size: var(--fs-11); width: 100%; outline: none;" />
+                  <span class="form-hint" style="font-size: var(--fs-9); color: var(--text-muted); margin-top: 2px;">
+                    Use this if "Sync Models" fails or doesn't list your custom model.
+                  </span>
+                </label>
+                
+                <label class="form-field">
+                  <span>Temperature</span>
+                  <div class="temp-row">
+                    <input type="range" min="0" max="2" step="0.1" bind:value={formTemperature} class="temp-slider" />
+                    <span class="temp-label">{formTemperature.toFixed(1)}</span>
+                  </div>
+                </label>
+                
+                {#if !formPersonaId}
+                  <label class="form-field form-field-full">
+                    <span>System Prompt</span>
+                    <textarea bind:value={formSystemPrompt} rows={3} placeholder="Optional system instructions for this agent..." class="form-textarea"></textarea>
+                  </label>
+                {:else if formSystemPrompt}
+                  <div class="form-hint" style="font-size: var(--fs-9-5); color: var(--text-muted); padding: 2px 0;">System prompt diisi otomatis dari persona yang dipilih.</div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <div class="form-actions" style="margin-top: 16px; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+            <span class="form-hint">Nama & ID agent dibuat otomatis per provider</span>
             <div class="form-btns">
               <button class="settings-btn settings-btn-cancel" onclick={cancelEdit}>Cancel</button>
-              <button class="settings-btn settings-btn-save" onclick={saveAgent} disabled={!formModel.trim()}>
+              <button class="settings-btn settings-btn-save" onclick={saveAgent} disabled={isProbing}>
                 {editingId ? "Update" : "Save"}
               </button>
             </div>
@@ -766,9 +894,24 @@
                 {#if agent.persona_id}<span class="agent-badge agent-badge-persona">{personas.find(p => p.id === agent.persona_id)?.name || agent.persona_id}</span>{/if}
                 {#if agent.api_key}<span class="agent-badge agent-badge-key" title="API key">&#x1F512;</span>{/if}
                 {#if agent.built_in}<span class="agent-badge agent-badge-builtin">built-in</span>{/if}
+                {#if agent.cached_models && agent.cached_models.length > 0}
+                  <span class="agent-badge" style="background: color-mix(in srgb, var(--accent-green) 12%, var(--bg-surface)); color: var(--accent-green); border: 1px solid color-mix(in srgb, var(--accent-green) 25%, var(--bg-surface));" title="{agent.cached_models.join(', ')}">
+                    ✓ {agent.cached_models.length} model{agent.cached_models.length !== 1 ? 's' : ''}
+                  </span>
+                {/if}
               </div>
             </div>
             {#if agent.base_url}<div class="agent-url">{agent.base_url}</div>{/if}
+            {#if agent.cached_models && agent.cached_models.length > 0}
+              <div style="display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 2px; padding: 0 2px; max-height: 52px; overflow-y: auto;">
+                {#each agent.cached_models.slice(0, 8) as m}
+                  <span style="display: inline-block; background: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-primary)); border: 1px solid color-mix(in srgb, var(--accent-blue) 18%, var(--bg-surface)); border-radius: 10px; padding: 2px 7px; font-size: var(--fs-9); font-family: monospace; color: var(--text-secondary);">{m}</span>
+                {/each}
+                {#if agent.cached_models.length > 8}
+                  <span style="font-size: var(--fs-9); color: var(--text-muted); padding: 2px 4px;">+{agent.cached_models.length - 8} more</span>
+                {/if}
+              </div>
+            {/if}
             <div class="agent-actions">
               <button class="agent-action agent-action-edit" onclick={() => startEdit(agent)} title="Edit">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
