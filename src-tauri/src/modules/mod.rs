@@ -9,3 +9,21 @@ pub mod sessions;
 pub mod ssh;
 #[cfg(target_os = "windows")]
 pub mod job;
+
+pub mod model_registry;
+pub mod tool_registry;
+pub mod routing_engine;
+pub mod fallback_manager;
+pub mod ripgrep;
+pub mod chain_engine;
+pub mod symbol_graph;
+pub mod parsers;
+pub mod graph;
+pub mod project_intel;
+pub mod review;
+pub mod provider_stats;
+pub mod agent_orch;
+pub mod self_heal;
+pub mod context;
+pub mod cost_routing;
+

@@ -1,0 +1,55 @@
+[[models]]
+id = "gemini-2.0-flash"
+name = "Gemini 2.0 Flash"
+provider = "gemini"
+context_window_limit = 1048576
+reasoning_tier = "Medium"
+specialization = ["Scan", "Chat"]
+cost_per_1k_tokens = 0.000075
+avg_latency_p95_ms = 2000
+max_parallel_calls = 5
+supports_streaming = true
+supports_tool_use = true
+fallback_priority = 1
+
+[[models]]
+id = "deepseek-r1"
+name = "DeepSeek R1"
+provider = "openrouter"
+context_window_limit = 163840
+reasoning_tier = "UltraHigh"
+specialization = ["Code", "Review"]
+cost_per_1k_tokens = 0.002
+avg_latency_p95_ms = 15000
+max_parallel_calls = 2
+supports_streaming = true
+supports_tool_use = false
+fallback_priority = 1
+
+[[models]]
+id = "qwen/qwen-2.5-coder-32b-instruct"
+name = "Qwen 2.5 Coder 32B"
+provider = "openrouter"
+context_window_limit = 32768
+reasoning_tier = "High"
+specialization = ["Code", "Test"]
+cost_per_1k_tokens = 0.0003
+avg_latency_p95_ms = 3000
+max_parallel_calls = 5
+supports_streaming = true
+supports_tool_use = true
+fallback_priority = 1
+
+[[models]]
+id = "meta-llama/llama-3-8b-instruct"
+name = "Llama 3 8B"
+provider = "openrouter"
+context_window_limit = 8192
+reasoning_tier = "Low"
+specialization = ["Chat"]
+cost_per_1k_tokens = 0.00005
+avg_latency_p95_ms = 1000
+max_parallel_calls = 10
+supports_streaming = true
+supports_tool_use = true
+fallback_priority = 1

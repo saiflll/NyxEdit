@@ -2,7 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { marked } from "marked";
-  import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent, agents as globalAgents, addToast } from "../stores.svelte";
+  import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent, agents as globalAgents, addToast, openFile } from "../stores.svelte";
   import { getIdleState } from "$lib/idle.svelte";
   import { get } from "svelte/store";
   import AIDiffViewer from "./AIDiffViewer.svelte";
@@ -134,6 +134,34 @@
     return null;
   }
 
+  type ReviewItem = {
+    severity: "must" | "should" | "nit";
+    file: string;
+    line: number;
+    issue: string;
+    fix: string;
+  };
+
+  function extractReviewFindings(content: string): ReviewItem[] {
+    const findings: ReviewItem[] = [];
+    const lines = content.split("\n");
+    for (const line of lines) {
+      // Regex pattern: [MUST/SHOULD/NIT] file:line - issue -> fix
+      // Support path matching with slashes/dots/letters/numbers
+      const match = line.match(/^\[(MUST|SHOULD|NIT)\]\s+([a-zA-Z0-9_\-\.\/\\ ]+):(\d+)\s+-\s+([^-]+)->\s*(.+)/i);
+      if (match) {
+        findings.push({
+          severity: match[1].toLowerCase() as any,
+          file: match[2].trim(),
+          line: parseInt(match[3]),
+          issue: match[4].trim(),
+          fix: match[5].trim()
+        });
+      }
+    }
+    return findings;
+  }
+
   function classifyFrontend(text: string): RequestTier {
     const wordCount = text.trim().split(/\s+/).length;
     const complexKw = /\b(debug|fix|implement|refactor|architect|design|analyze|optimize|reasoning|algorithm|performance|security|database|migration|integration|multi.step|step.by.step)\b/i;
@@ -197,6 +225,29 @@
   let unlistenRequestPermission: UnlistenFn | null = null;
   let unlistenRequestFilePermission: UnlistenFn | null = null;
   let unlistenFileChanged: UnlistenFn | null = null;
+  let unlistenRouteProgress: UnlistenFn | null = null;
+
+  let chainSteps = $state<{ index: number; label: string; status: "pending" | "active" | "completed" | "error" }[]>([]);
+
+  type DagProgressNode = {
+    id: string;
+    label: string;
+    level: number;
+    status: "pending" | "active" | "completed" | "error";
+  };
+  let dagNodes = $state<DagProgressNode[]>([]);
+  let currentLevelIdx = $state(0);
+
+  let dagLevels = $derived.by(() => {
+    const map = new Map<number, DagProgressNode[]>();
+    for (const node of dagNodes) {
+      const list = map.get(node.level) || [];
+      list.push(node);
+      map.set(node.level, list);
+    }
+    const sortedKeys = Array.from(map.keys()).sort((a, b) => a - b);
+    return sortedKeys.map(k => map.get(k) || []);
+  });
 
   let pendingPermission = $state<{ id: string; command: string; cwd: string } | null>(null);
   let commandOverride = $state("");
@@ -250,6 +301,7 @@
     unlistenRequestPermission?.(); unlistenRequestPermission = null;
     unlistenRequestFilePermission?.(); unlistenRequestFilePermission = null;
     unlistenFileChanged?.(); unlistenFileChanged = null;
+    unlistenRouteProgress?.(); unlistenRouteProgress = null;
   }
 
   async function saveCurrentSession() {
@@ -333,6 +385,8 @@
 
   async function tryStream(agentId: string, label: string, fallbackQueue: { agent: Agent; model: string }[], modelOverride?: string) {
     cleanup();
+    chainSteps = [];
+    dagNodes = [];
     messages = [...messages, { role: "assistant", content: "" }];
     toolCalls = new Map();
     streamingAgent = label;
@@ -340,6 +394,110 @@
     unlistenChunk = await listen<{delta: string}>("ai:chunk", (e) => {
       const last = messages[messages.length - 1];
       if (last) last.content += e.payload.delta;
+      messages = [...messages];
+    });
+
+    unlistenRouteProgress = await listen<string>("ai:route_progress", (e) => {
+      const msg = e.payload;
+
+      // 1. Detect Intent to pre-populate DAG nodes for better visualization
+      const intentMatch = msg.match(/intent=(\w+)/);
+      if (intentMatch) {
+        const intent = intentMatch[1];
+        if (intent === "RefactorFull") {
+          dagNodes = [
+            { id: "scan", label: "Scan Project", level: 0, status: "pending" },
+            { id: "review", label: "Review Code", level: 1, status: "pending" },
+            { id: "arch", label: "Architecture", level: 1, status: "pending" },
+            { id: "code", label: "Refactor Code", level: 2, status: "pending" }
+          ];
+        } else if (intent === "CodeReview") {
+          dagNodes = [
+            { id: "scan", label: "Scan Files", level: 0, status: "pending" },
+            { id: "security", label: "Security Review", level: 1, status: "pending" },
+            { id: "style", label: "Code Style", level: 1, status: "pending" },
+            { id: "perf", label: "Performance", level: 1, status: "pending" },
+            { id: "merge", label: "Merge Reviews", level: 2, status: "pending" }
+          ];
+        }
+      }
+
+      // 2. DAG Starting
+      const dagMatch = msg.match(/^Starting DAG with (\d+) nodes across (\d+) levels$/);
+      if (dagMatch) {
+        chainSteps = []; // Disable linear chain representation
+        currentLevelIdx = 0;
+        return;
+      }
+
+      // 3. DAG level transition
+      const dagLevelMatch = msg.match(/^DAG level (\d+)\/(\d+) \((\d+) parallel nodes\)$/);
+      if (dagLevelMatch) {
+        currentLevelIdx = parseInt(dagLevelMatch[1]) - 1;
+        // Mark all nodes in previous levels as completed
+        dagNodes = dagNodes.map(node => {
+          if (node.level < currentLevelIdx && node.status === "active") {
+            return { ...node, status: "completed" as const };
+          }
+          return node;
+        });
+        return;
+      }
+
+      // 4. DAG Node starting
+      const nodeStartMatch = msg.match(/^Starting DAG\[([^\]]+)\] (.+)$/);
+      if (nodeStartMatch) {
+        const nodeId = nodeStartMatch[1];
+        const nodeLabel = nodeStartMatch[2];
+        const exists = dagNodes.some(n => n.id === nodeId);
+        if (!exists) {
+          let lvl = currentLevelIdx;
+          if (nodeId === "scan") lvl = 0;
+          else if (["review", "arch", "security", "style", "perf"].includes(nodeId)) lvl = 1;
+          else lvl = 2;
+          
+          dagNodes = [...dagNodes, { id: nodeId, label: nodeLabel, level: lvl, status: "active" as const }];
+        } else {
+          dagNodes = dagNodes.map(n => n.id === nodeId ? { ...n, status: "active" as const } : n);
+        }
+        return;
+      }
+
+      // 5. DAG progress / completions
+      const nodeProgressMatch = msg.match(/^DAG progress: (\d+)\/(\d+) nodes complete$/);
+      if (nodeProgressMatch) {
+        const done = parseInt(nodeProgressMatch[1]);
+        const total = parseInt(nodeProgressMatch[2]);
+        if (done === total) {
+          dagNodes = dagNodes.map(n => n.status === "active" ? { ...n, status: "completed" as const } : n);
+        }
+        return;
+      }
+
+      // 6. Chain Matching (existing linear chain logic)
+      const chainMatch = msg.match(/^Starting chain with (\d+) steps$/);
+      if (chainMatch) {
+        dagNodes = []; // Disable DAG representation
+        const n = parseInt(chainMatch[1]);
+        chainSteps = Array.from({ length: n }, (_, i) => ({ index: i + 1, label: "", status: "pending" as const }));
+        if (n > 0) chainSteps[0].status = "active";
+        return;
+      }
+      const stepMatch = msg.match(/^Chain step (\d+): (.+)$/);
+      if (stepMatch) {
+        const idx = parseInt(stepMatch[1]) - 1;
+        const label = stepMatch[2];
+        chainSteps = chainSteps.map((s, i) => ({
+          ...s,
+          label: i === idx ? label : s.label,
+          status: i < idx ? "completed" : i === idx ? "active" : "pending",
+        }));
+        return;
+      }
+      const last = messages[messages.length - 1];
+      if (last) {
+        last.content = `*(${msg})*\n\n` + last.content;
+      }
       messages = [...messages];
     });
 
@@ -386,6 +544,14 @@
 
     unlistenDone = await listen<{content: string; provider: string; model: string; input_tokens: number; output_tokens: number; cost: number}>("ai:done", async (e) => {
       const p = e.payload;
+      if (chainSteps.length > 0) {
+        chainSteps = chainSteps.map(s => ({ ...s, status: "completed" as const }));
+        setTimeout(() => { chainSteps = []; }, 2000);
+      }
+      if (dagNodes.length > 0) {
+        dagNodes = dagNodes.map(n => ({ ...n, status: "completed" as const }));
+        setTimeout(() => { dagNodes = []; }, 2000);
+      }
       const prefix = streamingAgent ? `[${streamingAgent}]` : `[${p.provider}/${p.model}]`;
       messages[messages.length - 1] = { role: "assistant", content: prefix + "\n" + p.content };
       messages = [...messages];
@@ -398,6 +564,14 @@
     });
 
     unlistenError = await listen<{error: string}>("ai:error", async (e) => {
+      if (chainSteps.length > 0) {
+        chainSteps = chainSteps.map(s => ({ ...s, status: "error" as const }));
+        setTimeout(() => { chainSteps = []; }, 3000);
+      }
+      if (dagNodes.length > 0) {
+        dagNodes = dagNodes.map(n => n.status === "active" ? { ...n, status: "error" as const } : n);
+        setTimeout(() => { dagNodes = []; }, 3000);
+      }
       cleanup();
       messages = messages.slice(0, -1);
       toolCalls = new Map();
@@ -487,39 +661,13 @@
 
     try {
       if (selectedMode === "auto") {
-        // Step 1: Frontend classification (instant)
-        const frontendTier = classifyFrontend(promptText);
-        currentAutoTier = frontendTier;
-        
-        // Step 2: Select agent + model for tier (scans cached_models)
-        const chosen = selectAgentAndModelForTier(agents, frontendTier);
-        if (!chosen) {
-          messages = [...messages, { role: "assistant", content: "No agent with API key configured. Add one in Settings > Agents." }];
+        const baselineAgent = agents.find(a => a.api_key || a.provider === "ollama") || agents[0];
+        if (!baselineAgent) {
+          messages = [...messages, { role: "assistant", content: "No agent configured. Please configure an agent in Settings > Agents." }];
           isStreaming = false;
           return;
         }
-        
-        // Setup fallback queue: other agents or other models from same agent at adjacent tiers
-        const candidates = agents
-          .filter(a => a.id !== chosen.agent.id && (a.api_key || a.provider === "ollama"))
-          .map(a => ({ agent: a, model: a.model }));
-        autoFallbackQueue = candidates;
-        
-        // Step 3: Stream request using the chosen agent + specific model
-        const label = `Auto [${frontendTier}] ${chosen.agent.provider}/${chosen.model}`;
-        await tryStream(chosen.agent.id, label, candidates, chosen.model);
-        
-        // Step 4: Backend classification async (does not block UX)
-        invoke<any>("ai_classify_request", {
-          text: promptText,
-          frontendTier
-        }).then(res => {
-          if (res.overrode_frontend) {
-            console.log(`[AutoTier] Backend override: ${frontendTier} -> ${res.tier} (${res.reason})`);
-          }
-        }).catch(err => {
-          console.error("Backend classification error:", err);
-        });
+        await tryStream(baselineAgent.id, "Auto Routing", [], "auto");
       } else if (selectedAgentId) {
         await tryStream(selectedAgentId, "", []);
       }
@@ -768,11 +916,75 @@
                 {/if}
                 {#if msg.content}
                   <div class="md-content">{@html markedParse(meta.cleanContent)}</div>
+                  {@const reviewFindings = extractReviewFindings(meta.cleanContent)}
+                  {#if reviewFindings.length > 0}
+                    <div class="inline-review-container" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border-subtle); border-radius: 8px; background: rgba(0, 0, 0, 0.2); padding: 12px; animation: fadeIn 0.15s ease-out;">
+                      <div style="display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; margin-bottom: 4px;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-yellow)" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        <span style="font-size: var(--fs-10); font-weight: 700; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.5px;">Reviewer Agent Feedback Loop</span>
+                      </div>
+                      {#each reviewFindings as finding}
+                        <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; border-left: 3px solid {finding.severity === 'must' ? 'var(--accent-red)' : finding.severity === 'should' ? 'var(--accent-yellow)' : 'var(--accent-blue)'};">
+                          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                            <span style="font-size: var(--fs-9); font-weight: 700; color: {finding.severity === 'must' ? 'var(--accent-red)' : finding.severity === 'should' ? 'var(--accent-yellow)' : 'var(--accent-blue)'}; text-transform: uppercase;">
+                              {finding.severity}
+                            </span>
+                            <button 
+                              onclick={() => openFile(get(currentDir) + "/" + finding.file)}
+                              style="background: none; border: none; font-size: var(--fs-9-5); font-family: monospace; color: var(--accent-green); cursor: pointer; padding: 0; text-decoration: underline;"
+                            >
+                              {finding.file.split(/[\\/]/).pop()}:{finding.line}
+                            </button>
+                          </div>
+                          <div style="font-size: var(--fs-10-5); color: var(--text-primary); font-weight: 500;">
+                            {finding.issue}
+                          </div>
+                          {#if finding.fix}
+                            <div style="font-size: var(--fs-9-5); color: var(--text-secondary); background: var(--bg-primary); padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border-subtle); line-height: 1.3;">
+                              <span style="color: var(--accent-green); font-weight: 600;">Fix:</span> {finding.fix}
+                            </div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
                 {:else if toolCalls.size === 0}
                   <span class="thinking-text">Thinking<span class="dots"><span>.</span><span>.</span><span>.</span></span></span>
                 {/if}
               {:else}
                 <div class="md-content">{@html markedParse(meta.cleanContent)}</div>
+                {@const reviewFindings = extractReviewFindings(meta.cleanContent)}
+                {#if reviewFindings.length > 0}
+                  <div class="inline-review-container" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border-subtle); border-radius: 8px; background: rgba(0, 0, 0, 0.2); padding: 12px; animation: fadeIn 0.15s ease-out;">
+                    <div style="display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; margin-bottom: 4px;">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-yellow)" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                      <span style="font-size: var(--fs-10); font-weight: 700; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.5px;">Reviewer Agent Feedback Loop</span>
+                    </div>
+                    {#each reviewFindings as finding}
+                      <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; border-left: 3px solid {finding.severity === 'must' ? 'var(--accent-red)' : finding.severity === 'should' ? 'var(--accent-yellow)' : 'var(--accent-blue)'};">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                          <span style="font-size: var(--fs-9); font-weight: 700; color: {finding.severity === 'must' ? 'var(--accent-red)' : finding.severity === 'should' ? 'var(--accent-yellow)' : 'var(--accent-blue)'}; text-transform: uppercase;">
+                            {finding.severity}
+                          </span>
+                          <button 
+                            onclick={() => openFile(get(currentDir) + "/" + finding.file)}
+                            style="background: none; border: none; font-size: var(--fs-9-5); font-family: monospace; color: var(--accent-green); cursor: pointer; padding: 0; text-decoration: underline;"
+                          >
+                            {finding.file.split(/[\\/]/).pop()}:{finding.line}
+                          </button>
+                        </div>
+                        <div style="font-size: var(--fs-10-5); color: var(--text-primary); font-weight: 500;">
+                          {finding.issue}
+                        </div>
+                        {#if finding.fix}
+                          <div style="font-size: var(--fs-9-5); color: var(--text-secondary); background: var(--bg-primary); padding: 4px 6px; border-radius: 4px; border: 1px solid var(--border-subtle); line-height: 1.3;">
+                            <span style="color: var(--accent-green); font-weight: 600;">Fix:</span> {finding.fix}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
               {/if}
             {:else}
               {msg.display_content || cleanUserDisplayContent(msg.content)}
@@ -870,6 +1082,60 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         Scroll to bottom
       </button>
+    {/if}
+
+    {#if chainSteps.length > 0}
+      <div class="chain-progress">
+        {#each chainSteps as step}
+          <div class="chain-step" class:chain-step-active={step.status === "active"} class:chain-step-done={step.status === "completed"} class:chain-step-error={step.status === "error"}>
+            <div class="chain-step-icon">
+              {#if step.status === "completed"}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+              {:else if step.status === "error"}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="3"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+              {:else if step.status === "active"}
+                <span class="chain-step-spinner"></span>
+              {:else}
+                <span class="chain-step-dot"></span>
+              {/if}
+            </div>
+            <span class="chain-step-label">{step.label || `Step ${step.index}`}</span>
+            {#if step.index > 0 && step.index < chainSteps.length}
+              <div class="chain-step-line" class:chain-step-line-done={step.status === "completed"}></div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if dagNodes.length > 0}
+      <div class="dag-progress">
+        {#each dagLevels as level, levelIdx}
+          <div class="dag-level">
+            {#each level as node}
+              <div class="dag-node" class:dag-node-active={node.status === "active"} class:dag-node-done={node.status === "completed"} class:dag-node-error={node.status === "error"}>
+                <div class="dag-node-icon">
+                  {#if node.status === "completed"}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+                  {:else if node.status === "error"}
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="3.5"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+                  {:else if node.status === "active"}
+                    <span class="dag-node-spinner"></span>
+                  {:else}
+                    <span class="dag-node-dot"></span>
+                  {/if}
+                </div>
+                <span class="dag-node-label">{node.label}</span>
+              </div>
+            {/each}
+          </div>
+          {#if levelIdx < dagLevels.length - 1}
+            <div class="dag-level-connector">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          {/if}
+        {/each}
+      </div>
     {/if}
 
     <div class="ai-footer" onclick={() => { isDropupOpen = false; }}>
@@ -1032,6 +1298,21 @@
   .md-content :global(img) { max-width:100%; border-radius:4px; margin:2px 0; }
   .md-content :global(hr) { border:none; border-top:1px solid var(--border-subtle); margin:4px 0; }
 
+  /* ─── Chain Progress ─── */
+  .chain-progress { display:flex; align-items:center; gap:0; padding:6px 10px; border-top:1px solid var(--border-subtle); background:var(--bg-surface); flex-shrink:0; overflow-x:auto; }
+  .chain-step { display:flex; align-items:center; gap:4px; white-space:nowrap; flex-shrink:0; }
+  .chain-step-icon { width:18px; height:18px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .chain-step-spinner { width:8px; height:8px; border:2px solid var(--accent-blue); border-top-color:transparent; border-radius:50%; animation:spin 0.6s linear infinite; }
+  .chain-step-dot { width:6px; height:6px; border-radius:50%; background:var(--text-muted); opacity:0.3; }
+  .chain-step-done .chain-step-dot { background:var(--accent-green); opacity:1; }
+  .chain-step-label { font-size:var(--fs-10); color:var(--text-muted); }
+  .chain-step-active .chain-step-label { color:var(--accent-blue); font-weight:600; }
+  .chain-step-done .chain-step-label { color:var(--accent-green); }
+  .chain-step-error .chain-step-label { color:var(--accent-red); }
+  .chain-step-line { width:16px; height:1px; background:var(--border-subtle); margin:0 2px; flex-shrink:0; }
+  .chain-step-line-done { background:var(--accent-green); }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
   .permission-panel {
     margin: 8px 10px;
     padding: 10px;
@@ -1089,4 +1370,96 @@
   .perm-reject:hover { background: var(--accent-red); color: var(--bg-primary); }
   .perm-accept { background: var(--accent-blue); color: var(--bg-primary); }
   .perm-accept:hover { filter: brightness(1.15); }
+
+  /* ─── DAG Progress ─── */
+  .dag-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--bg-surface);
+    flex-shrink: 0;
+    overflow-x: auto;
+  }
+  .dag-level {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+  }
+  .dag-node {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+  .dag-node:hover {
+    border-color: var(--border-primary);
+  }
+  .dag-node-icon {
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .dag-node-spinner {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid var(--accent-blue);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  .dag-node-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    opacity: 0.3;
+  }
+  .dag-node-done {
+    border-color: var(--accent-green) !important;
+    background: color-mix(in srgb, var(--accent-green) 5%, var(--bg-primary));
+  }
+  .dag-node-done .dag-node-label {
+    color: var(--accent-green);
+  }
+  .dag-node-active {
+    border-color: var(--accent-blue) !important;
+    box-shadow: 0 0 8px rgba(0, 122, 255, 0.15);
+  }
+  .dag-node-active .dag-node-label {
+    color: var(--accent-blue);
+    font-weight: 600;
+  }
+  .dag-node-error {
+    border-color: var(--accent-red) !important;
+    background: color-mix(in srgb, var(--accent-red) 5%, var(--bg-primary));
+  }
+  .dag-node-error .dag-node-label {
+    color: var(--accent-red);
+  }
+  .dag-node-label {
+    font-size: var(--fs-10);
+    color: var(--text-muted);
+  }
+  .dag-level-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    opacity: 0.5;
+    flex-shrink: 0;
+  }
 </style>

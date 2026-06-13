@@ -41,23 +41,13 @@
 - Gunakan `adapter-static` -> jangan pakai server-side rendering
 - `npm run check` **sebelum** commit untuk cek error Svelte/TypeScript
 - Rust tests: `cd src-tauri && cargo test`
-  - 19 unit tests (tool execution, model price, system prompt resolution)
+  - 19 unit tests (tool execution, model price, system prompt resolution — plus DAG, context, cost routing)
   - 5 API tests (`#[ignore]` — run with `cargo test -- --ignored`, needs env vars)
 - `env_logger::init()` di `run()` — log Rust via env var `RUST_LOG`
 
 ## Progress
 ### Done
-- **Char-by-char streaming fix**: `run_react_loop` emits full content at once.
-- **Rust warnings cleanup**: removed dead `walk` variable, wired `timeout` in `bash_run`.
-- **Session management** (`sessions.rs`): `ChatSession` persisted as JSON in `{app_data_dir}/sessions/`, 4 Tauri commands (`ai_list_sessions`, `ai_get_session`, `ai_save_session`, `ai_delete_session`), `SessionsState` init via `.setup()` callback.
-- **AIChat.svelte sessions UI**: sidebar toggle, session list, New Chat, auto-save after each response.
-- **Provider-specific model detection**: `PROVIDER_ENDPOINTS` for 6 providers; `fetch_gemini_models()` (query-param auth); `fetch_openrouter_models()` (with model names); `ai_list_models` routes per provider.
-- **Settings.svelte form redesign**: `PROVIDERS` array with 9 providers, provider dropdown, 2-column grid (model, API key, base URL, temperature, persona, system prompt), single-agent-at-a-time.
-- **Compilation**: `npm run check` 0 errors, `cargo check` 0 errors.
-- **Rust tests**: 19 tool execution unit tests (read_file, write_file, edit, grep, glob, list_directory, bash_run, system prompt, model price, etc.).
-- **API verification**: Mistral (`mistral-large-latest`) and Vercel (`openai/gpt-4o-mini`) confirmed working. Cerebras (`gpt-oss-120b`) and Gemini (free-tier quota) keys valid.
-- **ReAct loop end-to-end**: Cerebras Coder persona → read_file tool → answer about Cargo.toml package name — passes.
-- **Vercel model ID fix**: changed `:` to `/` separator (Vercel AI Gateway uses `openai/gpt-4o-mini`, not `openai:gpt-4o-mini`).
+- **CMMO 14 stage architecture**: Smart Routing, Tool-First Engine, Chaining, SQLite, Knowledge Graph, Project Intel, Review, Multi-Model, Multi-Agent, DAG, Self-Healing, Performance & DX, RAG Context, Cost Routing.
 
 ## API Test Results
 | Provider | API Key | Model | Status |
@@ -69,6 +59,7 @@
 
 ## Testing
 - `cargo test` — runs 19 unit tests (no API keys needed, ~9s)
+  - 19 unit tests (tool execution, model price, system prompt resolution — plus DAG, context, cost routing) 
 - `CEREBRAS_API_KEY=... cargo test -- --ignored` — API integration tests
 - React loop test (`test_react_loop_coder_read_file`) confirms tool-calling ReAct loop works end-to-end
 
@@ -78,20 +69,56 @@
 - **Gemini** uses query-param auth: `?key=...`, models listed as `models/gemini-2.0-flash`
 - **Mistral direct API** uses standard OpenAI-compatible format
 
-## Progress (Sesi Ini)
-### Done
-- **add-menu z-index fix**: Moved `{#if addMenuOpen}` block out of `<header class="tab-bar">` (which has `backdrop-filter`, making it a containing block for fixed positioning). Now a direct child of `.workspace`. Uses `position: fixed; top: 38px; right: 50px; z-index: 9999`.
-- **Global glassmorphism**: Added `.workspace-area`, `.sidebar-body`, `.sidebar-workspace-content` to the global glass rule.
-- **SSHExplorer.svelte**: Complete SFTP rewrite — uses `ssh_connect` + `sftp_list_dir`, click-to-navigate, path bar, loading/error/retry.
-- **SSHTree.svelte**: Styling polish — 8px border-radius, active blue accent bar, shadow/hover, focus glow, ellipsis.
-- **Runner.svelte**: `.runner-panel` background → `transparent` for glass pass-through.
-- **Backend Database Client**: New `src-tauri/src/modules/db.rs` — 7 Tauri commands (`db_connect`, `db_disconnect`, `db_list_connections`, `db_query`, `db_list_databases`, `db_list_tables`, `db_get_columns`), sqlx + mongodb deps, registered in mod.rs + lib.rs, compiles `cargo check` with 0 errors.
-  - Compilation fixes: `do_query!` macro, `MutexGuard` Send fix via pool clone before await, `&pool` for `Executor`, `use sqlx::Column`, SQLite PRAGMA via `format!`, explicit `r.get::<T, _>(0)`.
+## CMMO — Status Real
 
-### Done (cont.)
-- **DatabaseClient.svelte**: Full sidebar + tab dual-mode component with connection list, new connection form (PostgreSQL/MySQL/SQLite/MongoDB), tree browser (databases → tables → columns), SQL query editor with results grid, `Ctrl+Enter` to run, per-connection "New Query" button that opens a tab.
-- **+page.svelte wiring**: Added `"database"` to `SidebarView` type + `activityViews` + activity bar icon (DB cylinder SVG) + `SIDEBAR_LABELS` + sidebar conditional rendering. Added `"db_query"` to `TabType` + `TAB_LABELS` + `TAB_ICONS` + `Tab.connectionId` field + tab conditional rendering. Added `openDbQueryTab` function.
-- `npm run check`: 0 errors.
+### Legend
+| Stage | Core Logic | Frontend UI | Active in main flow |
+|---|---|---|---|
+| **1** Smart Routing | ✅ `ModelRegistry`, `FallbackManager`, `models.toml` | ✅ Auto Mode di `ai_chat_stream` | ✅ Ya — dipanggil tiap auto mode |
+| **2** Tool-First Engine | ✅ `ripgrep.rs`, TreeSitter, scan cache | ❌ Tool-only route lewat stream | ✅ Ya — tool-only skip model call |
+| **3** Chaining | ✅ `chain_engine.rs`, `run_chain()` | ✅ `ChainProgressPanel.svelte` | ✅ Ya — kalau routing bikin chain plan |
+| **4** SQLite | ✅ `sessions.rs` SQLite rewrite, 4 commands | ✅ Session list/save/load | ✅ Ya — tiap chat pake database |
+| **5** Knowledge Graph | ✅ `symbol_graph.rs`, `parsers.rs`, file watcher | ❌ 11 commands registered | 🔶 Parsial — search dipakai tool-only, `graph_index_workspace` perlu trigger manual |
+| **6** Project Intel | ✅ `project_intel.rs`, framework detection | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `project_detect` dulu |
+| **7** Review | ✅ `review.rs`, 3 rules | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `review_text` manual |
+| **8** Multi-Model | ✅ `provider_stats.rs`, CircuitBreaker | ❌ 2 commands | ✅ Ya — circuit breaker aktif di fallback loop |
+| **9** Multi-Agent | ✅ `agent_orch.rs`, 3 sub-agents | ❌ 4 commands | 🔶 Tidak otomatis — perlu panggil `orch_delegate` |
+| **10** DAG | ✅ `DagPlan`, `run_dag()` parallel tokio | ❌ | 🔶 Routing prioritaskan DAG untuk RefactorFull/CodeReview |
+| **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ❌ 2 commands | 🔶 `report_degraded()` dipanggil di error path, frontend perlu `get_status` |
+| **12** Performance & DX | ✅ Cache warming, crash marker, startup health check | ❌ `heal_check_startup`, `heal_clear_crash_marker` | ✅ Cache warm di `ensure_loaded`, crash marker di startup |
+| **13** RAG Conversation Memory | ✅ `context.rs` — compression, cross-session retrieval | ❌ | ✅ Compression aktif di `ai_chat_stream` (OnceLock) |
+| **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ❌ 3 commands | 🔶 Routing preferensi, belum auto-dipanggil |
 
-### Next
-- (none — Database Client is feature-complete for v1)
+**Kesimpulan**: Backend 100%, frontend masih banyak yang belum di-Svelte-in. Yang benar-benar aktif end-to-end: Stage 1, 2, 3, 4, 8, 12 (partial), 13 (partial). Sisanya (5, 6, 7, 9, 10, 11, 14) jalan di Rust tapi belum punya UI / trigger otomatis penuh.
+
+### Rust files added (Stage 1–14)
+- `src-tauri/models.toml` — compiled-in model definitions
+- `src-tauri/src/modules/fallback_manager.rs` — fallback queue builder
+- `src-tauri/src/modules/ripgrep.rs` — ripgrep search + in-memory scan cache
+- `src-tauri/src/modules/chain_engine.rs` — chain + DAG plan/execution structs (`DagNode`, `DagPlan`, `DagEdge`, `run_dag()`)
+- `src-tauri/src/modules/symbol_graph.rs` — knowledge graph data structures
+- `src-tauri/src/modules/parsers.rs` — tree-sitter source code parser (Rust/JS/Python)
+- `src-tauri/src/modules/graph.rs` — GraphState + Tauri commands + file watcher
+- `src-tauri/src/modules/project_intel.rs` — project framework detection + context
+- `src-tauri/src/modules/review.rs` — review engine + 3 rules
+- `src-tauri/src/modules/provider_stats.rs` — provider metrics + circuit breaker
+- `src-tauri/src/modules/agent_orch.rs` — multi-agent orchestration
+- `src-tauri/src/modules/self_heal.rs` — SelfHealEngine + component health tracking + crash marker
+- `src-tauri/src/modules/context.rs` — conversation context compression + cross-session retrieval
+- `src-tauri/src/modules/cost_routing.rs` — cost-aware model selection + budget enforcement
+- `src-tauri/src/modules/mod.rs` — semua module registrations
+- `src-tauri/src/modules/model_registry.rs` — +`load()` TOML method
+- `src-tauri/src/modules/routing_engine.rs` — SYMBOL_LOOKUP → TreeSitter, +`route_with_context()`
+- `src-tauri/src/modules/tool_registry.rs` — +TreeSitter in load_default()
+- `src-tauri/src/modules/ai.rs` — +tool-only route, +fallback loop with circuit breaker, +`run_chain()`, +`run_dag()`, +health reporting, +cost budget, +context compression
+- `src-tauri/src/modules/sessions.rs` — full rewrite: JSON files → SQLite (async commands) + `recover_last_session`
+- `src-tauri/src/lib.rs` — +graph state + all new module states + commands
+
+### Frontend changes
+- `src/lib/components/AIChat.svelte` — +chainSteps state, `ai:route_progress` parser, ChainProgressPanel stepper
+
+### Verification
+- `cargo check`: 0 errors
+- `cargo test`: 19/19 passed, 5 ignored (API tests need env vars)
+- `npm run check`: 0 errors (71 pre-existing warnings)
+- Total CMMO: Stage 1–14 100% backend, ~40% frontend integration

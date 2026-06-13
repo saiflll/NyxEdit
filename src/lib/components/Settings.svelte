@@ -16,7 +16,11 @@
   ];
   // ─── Agent state ──────────────────────────────
   import { loadNyxConfig, saveNyxConfig, getActiveSettings, saveGlobalNyxConfig } from "$lib/nyxConfig";
-  import { currentDir, addToast, agents as globalAgents } from "../stores.svelte";
+  import { currentDir, addToast, agents as globalAgents, openFile } from "../stores.svelte";
+  import CodeReviewPanel from "./CodeReviewPanel.svelte";
+  import OrchestratorPanel from "./OrchestratorPanel.svelte";
+  import SystemHealthCostPanel from "./SystemHealthCostPanel.svelte";
+  import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 
   let globalInstructions = $state("");
   let skillRead = $state(true);
@@ -29,6 +33,9 @@
     const unsub = currentDir.subscribe(val => {
       workspaceDir = val;
       loadGlobalSettings();
+      if (val) {
+        invoke("graph_watch", { root: val }).catch(console.error);
+      }
     });
     return unsub;
   });
@@ -290,7 +297,191 @@
   // ─── Shared Theme Layer ──────────────────────
   import { THEMES, FONTS, getStoredTheme, getStoredFont, getStoredFontSize, applyTheme as sharedApplyTheme, applyFont as sharedApplyFont, applyFontSize as sharedApplyFontSize } from "$lib/themes";
 
-  let settingsTab = $state<"agent" | "appearance" | "setup" | "shortcuts" | "about">("appearance");
+  let settingsTab = $state<"agent" | "appearance" | "setup" | "shortcuts" | "about" | "workspace" | "review" | "diagnostics" | "orchestrator" | "health_cost">("appearance");
+
+  // ─── Workspace and Project Intelligence State ───
+  let graphNodesCount = $state(0);
+  let graphEdgesCount = $state(0);
+  let isIndexingGraph = $state(false);
+  let indexGraphStatus = $state("");
+  let indexTotalFiles = $state(0);
+  let indexCurrentFile = $state("");
+  let indexCurrentIndex = $state(0);
+  let indexProgress = $state(0);
+
+  let searchQuery = $state("");
+  let searchResults = $state<any[]>([]);
+  let isSearchingGraph = $state(false);
+  let expandedSymbolId = $state<string | null>(null);
+  let symbolReferences = $state<any[]>([]);
+  let symbolOutgoing = $state<any[]>([]);
+  let isLoadingDetails = $state(false);
+
+  async function searchSymbolGraph() {
+    if (!searchQuery.trim()) {
+      searchResults = [];
+      return;
+    }
+    isSearchingGraph = true;
+    expandedSymbolId = null;
+    try {
+      const results = await invoke<any[]>("graph_search", { query: searchQuery.trim() });
+      searchResults = results;
+      if (results.length === 0) {
+        addToast("No symbols found matching query", "info");
+      }
+    } catch (e) {
+      console.error(e);
+      addToast("Failed to query symbol graph: " + String(e), "error");
+    } finally {
+      isSearchingGraph = false;
+    }
+  }
+
+  async function showSymbolDetails(node: any) {
+    if (expandedSymbolId === node.id) {
+      expandedSymbolId = null;
+      return;
+    }
+    expandedSymbolId = node.id;
+    isLoadingDetails = true;
+    symbolReferences = [];
+    symbolOutgoing = [];
+    try {
+      const refs = await invoke<any[]>("graph_references", { id: node.id });
+      symbolReferences = refs;
+      const out = await invoke<any[]>("graph_outgoing", { id: node.id });
+      symbolOutgoing = out;
+    } catch (e) {
+      console.error(e);
+    } finally {
+      isLoadingDetails = false;
+    }
+  }
+  let projectIntel = $state<{
+    framework: string;
+    has_tests: boolean;
+    has_ci: boolean;
+    has_docker: boolean;
+    file_count: number;
+    language: string;
+    src_dirs: string[];
+  } | null>(null);
+  let projectIntelError = $state("");
+
+  async function loadWorkspaceData() {
+    if (!workspaceDir) {
+      projectIntel = null;
+      graphNodesCount = 0;
+      graphEdgesCount = 0;
+      return;
+    }
+    
+    // Fetch Graph stats
+    try {
+      const stats = await invoke<[number, number]>("graph_stats");
+      graphNodesCount = stats[0];
+      graphEdgesCount = stats[1];
+    } catch (e) {
+      console.error("Failed to load graph stats:", e);
+    }
+
+    // Fetch Project Intelligence
+    try {
+      const ctx = await invoke<any>("project_detect", { root: workspaceDir });
+      // Map framework enum to a friendly string
+      let fwLabel = "Unknown";
+      if (ctx.framework === "RustCargo") fwLabel = "Rust/Cargo";
+      else if (ctx.framework === "NodeNpm") fwLabel = "Node.js (npm)";
+      else if (ctx.framework === "NodeYarn") fwLabel = "Node.js (yarn)";
+      else if (ctx.framework === "PythonPoetry") fwLabel = "Python (Poetry)";
+      else if (ctx.framework === "PythonPip") fwLabel = "Python (pip)";
+      else if (ctx.framework === "PlatformIO") fwLabel = "PlatformIO";
+      else if (ctx.framework === "Docker") fwLabel = "Docker";
+      
+      projectIntel = {
+        framework: fwLabel,
+        has_tests: ctx.has_tests,
+        has_ci: ctx.has_ci,
+        has_docker: ctx.has_docker,
+        file_count: ctx.file_count,
+        language: ctx.language,
+        src_dirs: ctx.src_dirs || [],
+      };
+      projectIntelError = "";
+    } catch (e) {
+      console.error("Failed to detect project context:", e);
+      projectIntelError = String(e);
+      projectIntel = null;
+    }
+  }
+
+  async function indexWorkspace() {
+    if (!workspaceDir) return;
+    isIndexingGraph = true;
+    indexGraphStatus = "Indexing workspace...";
+    indexProgress = 0;
+    indexCurrentFile = "Starting...";
+    indexCurrentIndex = 0;
+    indexTotalFiles = 0;
+    try {
+      const res = await invoke<string>("graph_index_workspace", { root: workspaceDir });
+      indexGraphStatus = res;
+      addToast(res, "success");
+      await loadWorkspaceData();
+    } catch (e) {
+      indexGraphStatus = "Failed to index workspace: " + String(e);
+      addToast("Workspace indexing failed", "error");
+    } finally {
+      isIndexingGraph = false;
+    }
+  }
+
+  $effect(() => {
+    let unlistenStart: UnlistenFn | null = null;
+    let unlistenProgress: UnlistenFn | null = null;
+    let unlistenEnd: UnlistenFn | null = null;
+
+    async function setupListeners() {
+      unlistenStart = await listen<number>("graph:index_start", (event) => {
+        isIndexingGraph = true;
+        indexTotalFiles = event.payload;
+        indexProgress = 0;
+        indexCurrentFile = "Analyzing workspace files...";
+        indexCurrentIndex = 0;
+      });
+
+      unlistenProgress = await listen<any>("graph:index_progress", (event) => {
+        isIndexingGraph = true;
+        const data = event.payload;
+        indexProgress = data.progress;
+        indexCurrentFile = data.current_file;
+        indexTotalFiles = data.total_files;
+        indexCurrentIndex = data.current_index;
+      });
+
+      unlistenEnd = await listen<number>("graph:index_end", (event) => {
+        isIndexingGraph = false;
+        indexProgress = 100;
+        indexCurrentFile = "";
+        loadWorkspaceData();
+      });
+    }
+
+    setupListeners();
+
+    return () => {
+      if (unlistenStart) unlistenStart();
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenEnd) unlistenEnd();
+    };
+  });
+
+  $effect(() => {
+    if (settingsTab === "workspace") {
+      loadWorkspaceData();
+    }
+  });
 
   let currentTheme = $state(getStoredTheme());
   let currentFont = $state(getStoredFont());
@@ -432,6 +623,7 @@
     docker: "unknown",
     flutter: "unknown",
   });
+  let setupInited = $state(false);
 
   async function checkTool(id: string, checkCmd: string) {
     statuses[id] = "checking";
@@ -578,7 +770,8 @@
   });
 
   $effect(() => {
-    if (settingsTab === "setup") {
+    if (settingsTab === "setup" && !setupInited) {
+      setupInited = true;
       checkAllTools();
     }
   });
@@ -598,6 +791,26 @@
     <button class="settings-tab" class:active={settingsTab === "setup"} onclick={() => (settingsTab = "setup")}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       Setup
+    </button>
+    <button class="settings-tab" class:active={settingsTab === "workspace"} onclick={() => (settingsTab = "workspace")}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      Workspace
+    </button>
+    <button class="settings-tab" class:active={settingsTab === "review"} onclick={() => (settingsTab = "review")}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      Review
+    </button>
+    <button class="settings-tab" class:active={settingsTab === "diagnostics"} onclick={() => (settingsTab = "diagnostics")}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Diagnostics
+    </button>
+    <button class="settings-tab" class:active={settingsTab === "orchestrator"} onclick={() => (settingsTab = "orchestrator")}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Orchestrator
+    </button>
+    <button class="settings-tab" class:active={settingsTab === "health_cost"} onclick={() => (settingsTab = "health_cost")}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/><path d="M16 16v-3a4 4 0 0 0-8 0v3"/></svg>
+      Health & Costs
     </button>
     <button class="settings-tab" class:active={settingsTab === "shortcuts"} onclick={() => (settingsTab = "shortcuts")}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/></svg>
@@ -1122,6 +1335,256 @@
         {/if}
       </div>
     </div>
+  {:else if settingsTab === "workspace"}
+    <div class="workspace-section" style="padding: 16px; display: flex; flex-direction: column; gap: 16px; flex: 1; overflow-y: auto;">
+      <div class="settings-header" style="padding: 0 0 10px 0; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
+        <span class="settings-title">Workspace Index & Intelligence</span>
+        <button class="settings-btn settings-btn-add" onclick={indexWorkspace} disabled={isIndexingGraph || !workspaceDir}>
+          {#if isIndexingGraph}
+            <span class="spinner-tiny" style="border-color: var(--bg-primary); border-top-color: transparent;"></span>
+            Indexing...
+          {:else}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            Index Workspace
+          {/if}
+        </button>
+      </div>
+
+      {#if !workspaceDir}
+        <div class="no-workspace-alert" style="padding: 16px; border-radius: 8px; background: color-mix(in srgb, var(--accent-yellow) 10%, transparent); border: 1px solid var(--accent-yellow); color: var(--text-primary); text-align: center;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom: 8px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <p style="margin: 0; font-size: var(--fs-11); font-weight: 500;">No active workspace directory opened. Please open a project folder first.</p>
+        </div>
+      {:else}
+        {#if isIndexingGraph}
+          <div class="indexing-progress-container" style="padding: 16px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); backdrop-filter: blur(8px);">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: var(--fs-11); font-weight: 500;">
+              <span style="color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
+                <span class="spinner-tiny" style="border-color: var(--accent-blue); border-top-color: transparent; width: 12px; height: 12px; margin-right: 0;"></span>
+                <span>{indexGraphStatus || "Indexing workspace..."}</span>
+              </span>
+              <span style="color: var(--accent-blue); font-family: monospace; font-weight: 600;">{Math.round(indexProgress)}%</span>
+            </div>
+            
+            <div class="progress-bar-bg" style="width: 100%; height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; border: 1px solid var(--border-subtle);">
+              <div class="progress-bar-fill" style="width: {indexProgress}%; height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-green)); transition: width 0.2s ease-out; border-radius: 3px;"></div>
+            </div>
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: var(--fs-9-5); color: var(--text-muted);">
+              <span style="text-overflow: ellipsis; overflow: hidden; white-space: nowrap; max-width: 70%;" title={indexCurrentFile}>
+                {#if indexCurrentFile}
+                  File: <span style="font-family: monospace; color: var(--text-secondary);">{indexCurrentFile}</span>
+                {:else}
+                  Scanning files...
+                {/if}
+              </span>
+              <span>{indexCurrentIndex} / {indexTotalFiles} files</span>
+            </div>
+          </div>
+        {:else if indexGraphStatus}
+          <div class="status-msg" style="padding: 10px 14px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); font-size: var(--fs-11); color: var(--text-secondary); display: flex; align-items: center; gap: 8px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style="font-weight: 500;">{indexGraphStatus}</span>
+          </div>
+        {/if}
+
+        <div class="workspace-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+          <!-- Symbol Graph Card -->
+          <div class="setup-card" style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="setup-card-header" style="display: flex; align-items: center; gap: 10px;">
+              <span class="setup-card-icon" style="color: var(--accent-blue);">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v8M12 14v8M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h8M14 12h8M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              </span>
+              <div class="setup-card-info">
+                <span class="setup-card-name">Workspace Symbol Graph</span>
+                <p class="setup-card-desc">Tracks code definitions, functions, and cross-file dependencies.</p>
+              </div>
+            </div>
+            <div class="graph-stats-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px;">
+              <div class="stat-box" style="padding: 12px; border-radius: 6px; background: var(--bg-primary); border: 1px solid var(--border-subtle); text-align: center;">
+                <span style="font-size: var(--fs-20); font-weight: 700; color: var(--accent-blue); display: block; font-family: monospace;">{graphNodesCount}</span>
+                <span style="font-size: var(--fs-9-5); color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">Indexed Symbols</span>
+              </div>
+              <div class="stat-box" style="padding: 12px; border-radius: 6px; background: var(--bg-primary); border: 1px solid var(--border-subtle); text-align: center;">
+                <span style="font-size: var(--fs-20); font-weight: 700; color: var(--accent-green); display: block; font-family: monospace;">{graphEdgesCount}</span>
+                <span style="font-size: var(--fs-9-5); color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">Dependencies</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Project Intelligence Card -->
+          <div class="setup-card" style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="setup-card-header" style="display: flex; align-items: center; gap: 10px;">
+              <span class="setup-card-icon" style="color: var(--accent-green);">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/><path d="M12 6v6l4 2"/></svg>
+              </span>
+              <div class="setup-card-info">
+                <span class="setup-card-name">Project Intelligence</span>
+                <p class="setup-card-desc">Automatically detected framework configuration and project files info.</p>
+              </div>
+            </div>
+            
+            {#if projectIntelError}
+              <div class="fetch-error" style="margin-top: 8px;">{projectIntelError}</div>
+            {:else if projectIntel}
+              <div class="intel-details" style="display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-11); margin-top: 4px; background: var(--bg-primary); padding: 10px; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-muted);">Framework / Platform:</span>
+                  <span style="font-weight: 600; color: var(--accent-blue);">{projectIntel.framework}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-muted);">Main Language:</span>
+                  <span style="font-weight: 600; color: var(--text-primary);">{projectIntel.language}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-muted);">Source Files Count:</span>
+                  <span style="font-weight: 600; color: var(--text-primary);">{projectIntel.file_count}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                  <span style="color: var(--text-muted);">Source Directories:</span>
+                  <span style="font-weight: 600; color: var(--text-primary); font-family: monospace;">{projectIntel.src_dirs.length > 0 ? projectIntel.src_dirs.join(', ') : 'None'}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; border-top: 1px solid var(--border-subtle); padding-top: 6px; margin-top: 2px;">
+                  <span style="color: var(--text-muted);">Features Enabled:</span>
+                  <div style="display: flex; gap: 6px;">
+                    {#if projectIntel.has_tests}
+                      <span style="padding: 1px 5px; font-size: var(--fs-9); background: color-mix(in srgb, var(--accent-green) 12%, transparent); color: var(--accent-green); border-radius: 3px; font-weight: 600;">TESTS</span>
+                    {/if}
+                    {#if projectIntel.has_ci}
+                      <span style="padding: 1px 5px; font-size: var(--fs-9); background: color-mix(in srgb, var(--accent-blue) 12%, transparent); color: var(--accent-blue); border-radius: 3px; font-weight: 600;">CI/CD</span>
+                    {/if}
+                    {#if projectIntel.has_docker}
+                      <span style="padding: 1px 5px; font-size: var(--fs-9); background: color-mix(in srgb, var(--accent-yellow) 12%, transparent); color: var(--accent-yellow); border-radius: 3px; font-weight: 600;">DOCKER</span>
+                    {/if}
+                    {#if !projectIntel.has_tests && !projectIntel.has_ci && !projectIntel.has_docker}
+                      <span style="color: var(--text-muted); font-size: var(--fs-10);">None</span>
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {:else}
+              <div style="font-size: var(--fs-10); color: var(--text-muted); text-align: center; padding: 12px 0;">Loading intelligence data...</div>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Symbol Graph Search Card -->
+        <div class="setup-card" style="margin-top: 16px; display: flex; flex-direction: column; gap: 12px; width: 100%;">
+          <div style="font-size: var(--fs-11); font-weight: 700; color: var(--text-primary); border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <span>Symbol Dependency Graph Explorer</span>
+            <span style="font-size: var(--fs-9); color: var(--text-muted); font-weight: normal; text-transform: uppercase;">Stage 5 Knowledge Graph</span>
+          </div>
+
+          <div style="display: flex; gap: 8px;">
+            <input 
+              bind:value={searchQuery} 
+              type="text" 
+              placeholder="Search symbols (e.g. auth_service, validate)..." 
+              style="flex: 1; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 12px; font-size: var(--fs-11); outline: none;" 
+              onkeydown={(e) => { if (e.key === "Enter") searchSymbolGraph(); }}
+            />
+            <button 
+              class="settings-btn settings-btn-add" 
+              onclick={searchSymbolGraph} 
+              disabled={isSearchingGraph || !searchQuery.trim()}
+              style="padding: 6px 14px; font-size: var(--fs-10); background: var(--accent-blue); color: var(--bg-primary); border: none; border-radius: 6px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px;"
+            >
+              {#if isSearchingGraph}
+                <span class="spinner-tiny" style="border-color: var(--bg-primary); border-top-color: transparent;"></span>
+                Searching...
+              {:else}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                Search Graph
+              {/if}
+            </button>
+          </div>
+
+          {#if searchResults.length > 0}
+            <div class="symbol-results" style="display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto; padding: 2px;">
+              {#each searchResults as node}
+                <div class="symbol-card" style="background: var(--bg-primary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px; transition: border-color 0.15s ease;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+                      <span style="font-size: var(--fs-9); font-weight: 600; padding: 2px 6px; border-radius: 4px; background: color-mix(in srgb, var(--accent-blue) 12%, transparent); color: var(--accent-blue); text-transform: uppercase;">
+                        {node.kind}
+                      </span>
+                      <span style="font-size: var(--fs-11); font-weight: 700; color: var(--text-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">
+                        {node.name}
+                      </span>
+                    </div>
+
+                    <button 
+                      onclick={() => showSymbolDetails(node)}
+                      style="background: transparent; border: none; font-size: var(--fs-9-5); color: var(--accent-blue); cursor: pointer; padding: 2px 6px; font-weight: 600;"
+                    >
+                      {expandedSymbolId === node.id ? "Hide Connections ▴" : "Show Connections ▾"}
+                    </button>
+                  </div>
+
+                  <div style="font-size: var(--fs-10); color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                    <button 
+                      onclick={() => openFile(workspaceDir + "/" + node.file_path)} 
+                      style="background: none; border: none; color: var(--accent-green); cursor: pointer; padding: 0; font-family: monospace; font-size: var(--fs-9-5); text-align: left; text-decoration: underline;"
+                    >
+                      {node.file_path}:{node.line}
+                    </button>
+                    <span>Range: Line {node.line}–{node.end_line}</span>
+                  </div>
+
+                  {#if expandedSymbolId === node.id}
+                    <div style="margin-top: 6px; border-top: 1px solid var(--border-subtle); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; background: rgba(0, 0, 0, 0.08); padding: 8px; border-radius: 4px; animation: slideDown 0.12s ease-out;">
+                      {#if isLoadingDetails}
+                        <div style="font-size: var(--fs-9-5); color: var(--text-muted); text-align: center;">Loading graph references...</div>
+                      {:else}
+                        <!-- Inbound References -->
+                        <div>
+                          <span style="font-size: var(--fs-9); font-weight: 700; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px;">Inbound References (Referenced By)</span>
+                          {#if symbolReferences.length === 0}
+                            <span style="font-size: var(--fs-9-5); color: var(--text-muted); font-style: italic;">No symbols reference this node.</span>
+                          {:else}
+                            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                              {#each symbolReferences as ref}
+                                <span style="font-size: var(--fs-9-5); font-family: monospace; background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 2px 6px; border-radius: 4px; color: var(--text-secondary);" title="{ref.file_path}:{ref.line}">
+                                  {ref.name}
+                                </span>
+                              {/each}
+                            </div>
+                          {/if}
+                        </div>
+
+                        <!-- Outgoing References -->
+                        <div style="margin-top: 4px;">
+                          <span style="font-size: var(--fs-9); font-weight: 700; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 4px;">Outgoing Dependencies (Depends On)</span>
+                          {#if symbolOutgoing.length === 0}
+                            <span style="font-size: var(--fs-9-5); color: var(--text-muted); font-style: italic;">No outgoing relations.</span>
+                          {:else}
+                            <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+                              {#each symbolOutgoing as edge}
+                                <span style="font-size: var(--fs-9-5); font-family: monospace; background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 2px 6px; border-radius: 4px; color: var(--text-secondary);" title="{edge[0].file_path}:{edge[0].line}">
+                                  <span style="color: var(--accent-blue); font-weight: 600;">{edge[1]}</span> {edge[0].name}
+                                </span>
+                              {/each}
+                            </div>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {:else if settingsTab === "review"}
+    <CodeReviewPanel />
+  {:else if settingsTab === "diagnostics"}
+    <DiagnosticsPanel />
+  {:else if settingsTab === "orchestrator"}
+    <OrchestratorPanel />
+  {:else if settingsTab === "health_cost"}
+    <SystemHealthCostPanel />
   {:else if settingsTab === "about"}
     <div class="about-section">
       <div class="settings-header">

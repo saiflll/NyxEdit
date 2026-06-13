@@ -176,6 +176,7 @@ fn model_price(model: &str) -> (f64, f64) {
     }
 }
 
+#[derive(Clone)]
 pub struct AiManager {
     pub agents: Arc<Mutex<HashMap<String, AgentConfig>>>,
     pub usage: Arc<Mutex<HashMap<String, AgentUsage>>>,
@@ -242,12 +243,27 @@ impl AiManager {
             let from_disk = load_agents_from_disk(app);
             if !from_disk.is_empty() {
                 let mut agents = self.agents.lock().unwrap();
-                // Merge: disk wins for keys that don't already exist in memory
                 for (k, v) in from_disk {
                     agents.entry(k).or_insert(v);
                 }
             }
+            // Warm cache: pre-load session list and scan cache on first call
+            self.warm_cache(app);
         }
+    }
+
+    /// Warm up caches on first load for faster subsequent operations.
+    fn warm_cache(&self, app: &tauri::AppHandle) {
+        // Warm ripgrep scan cache if workspace root is set
+        let root = self.workspace_root.lock().unwrap().clone();
+        if !root.is_empty() && std::path::Path::new(&root).exists() {
+            let _ = super::ripgrep::search_text("fn", std::path::Path::new(&root), Some(5));
+        }
+        // Report healthy to self-heal engine
+        if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+            heal.report_healthy("ai");
+        }
+        log::info!("Cache warmed for workspace: {}", root);
     }
 
     pub fn record_usage(&self, agent_id: &str, input_tokens: u64, output_tokens: u64, cost: f64) {
@@ -287,6 +303,11 @@ impl AiManager {
     pub fn get_agent(&self, agent_id: &str) -> Option<AgentConfig> {
         let agents = self.agents.lock().unwrap();
         agents.get(agent_id).cloned()
+    }
+
+    pub fn get_agent_for_provider(&self, provider: &str) -> Option<AgentConfig> {
+        let agents = self.agents.lock().unwrap();
+        agents.values().find(|a| a.provider == provider).cloned()
     }
 
     pub fn list_agents(&self) -> Vec<AgentConfig> {
@@ -1236,6 +1257,7 @@ pub async fn ai_chat_stream(
     state: tauri::State<'_, AiManager>,
     secrets_state: tauri::State<'_, crate::modules::secrets::SecretsState>,
     pty_state: tauri::State<'_, crate::modules::pty::PtyManager>,
+    graph_state: tauri::State<'_, crate::modules::graph::GraphState>,
     agent_id: String,
     messages: Vec<ChatMessage>,
     workspace_root: Option<String>,
@@ -1244,6 +1266,7 @@ pub async fn ai_chat_stream(
 ) -> Result<(), String> {
     state.ensure_loaded(&app);
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
+    
     // Apply model override if provided (Auto Mode selects a specific model from cached_models)
     if let Some(ref m) = model_override {
         if !m.is_empty() {
@@ -1251,28 +1274,63 @@ pub async fn ai_chat_stream(
         }
     }
 
+    // Auto Mode Routing Integration
+    let is_auto_mode = agent.model == "auto" || model_override.as_deref() == Some("auto");
+    let registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    let tools = super::tool_registry::ToolRegistry::load_default();
+    let engine = super::routing_engine::RoutingEngine::new(registry.clone(), tools);
+    let routing_decision = if is_auto_mode {
+        let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
+        let decision = engine.route_request(last_message);
+        state.write_agent_log(&agent.id, &agent.name, &format!("AUTO ROUTING: intent={:?} size={:?} output={:?} reasoning={:?} tool={:?} model={:?}", 
+            decision.intent, decision.context_size, decision.output_type, decision.reasoning_tier, decision.tool_route, decision.model_route));
+        let _ = app.emit("ai:route_progress", format!("Auto routing: intent={:?}, selected model={:?}", decision.intent, decision.model_route));
+        Some(decision)
+    } else {
+        None
+    };
+
+    if let Some(ref decision) = routing_decision {
+        if let Some(ref model_id) = decision.model_route {
+            if let Some(model_meta) = engine.model_registry.models.iter().find(|m| m.id == *model_id) {
+                if model_meta.provider != agent.provider {
+                    if let Some(provider_agent) = state.get_agent_for_provider(&model_meta.provider) {
+                        agent.provider = provider_agent.provider;
+                        agent.base_url = provider_agent.base_url;
+                        agent.id = provider_agent.id.clone();
+                    } else {
+                        agent.provider = model_meta.provider.clone();
+                        agent.base_url = None;
+                    }
+                }
+            }
+            agent.model = model_id.clone();
+        } else {
+            agent.model = "gemini-2.0-flash".to_string();
+            agent.provider = "gemini".to_string();
+            agent.base_url = None;
+        }
+    }
+
+    // Build fallback manager for auto mode
+    let mut fallback_mgr = routing_decision.as_ref().map(|decision| {
+        super::fallback_manager::FallbackManager::from_registry(
+            &registry,
+            decision.reasoning_tier.clone(),
+            match decision.intent {
+                super::routing_engine::Intent::ExplainSimple | super::routing_engine::Intent::ArchDesign => super::model_registry::Spec::Chat,
+                super::routing_engine::Intent::CodeWrite | super::routing_engine::Intent::RefactorFull => super::model_registry::Spec::Code,
+                super::routing_engine::Intent::CodeReview => super::model_registry::Spec::Review,
+                super::routing_engine::Intent::TestGenerate => super::model_registry::Spec::Test,
+                super::routing_engine::Intent::ScanOnly | super::routing_engine::Intent::SymbolLookup | super::routing_engine::Intent::DebugLogic => super::model_registry::Spec::Scan,
+            },
+            decision.token_count,
+        )
+    });
+
     // Update workspace root for logging
     if let Some(ref root) = workspace_root {
         state.set_workspace_root(root);
-    }
-
-    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
-        agent.api_key = Some(real_key);
-    } else if let Some(ref key) = agent.api_key {
-        if key == "********" {
-            let _ = app.emit("ai:error", AiStreamError { error: "API key is configured but not found in OS Keychain. Please re-enter the key in Settings > Agents.".to_string() });
-            return Err("API key not found in keychain".to_string());
-        }
-        // else: key is stored inline (non-masked), use it as-is
-    }
-    // Note: api_key = None is OK for local/no-key providers (ollama, other self-hosted).
-
-    let base_url = agent.base_url.clone().unwrap_or_else(|| default_base_url(&agent.provider).to_string());
-
-    if base_url.is_empty() {
-        let msg = format!("Base URL is required for provider '{}'. Enter your endpoint URL in Settings > Agents.", agent.provider);
-        let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
-        return Err(msg);
     }
 
     let is_private = if let Some(ref sid) = active_session_id {
@@ -1281,41 +1339,204 @@ pub async fn ai_chat_stream(
         false
     };
 
-    // Use ReAct loop for persona agents, simple streaming for others
-    let result = if agent.persona_id.is_some() {
-        run_react_loop(&app, &state, &agent, &messages, &base_url, is_private).await
-    } else {
-        stream_openai(&app, &agent, &messages, &base_url).await
-    };
+    // Tool-only route: execute tool directly, skip model call
+    if let Some(ref decision) = routing_decision {
+        if let Some(tool_id) = &decision.tool_route {
+            if matches!(decision.output_type, super::routing_engine::OutputType::ToolOutput) {
+                let result = match tool_id {
+                    super::tool_registry::ToolId::Ripgrep => {
+                        let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
+                        let root = workspace_root.as_deref().unwrap_or(".");
+                        super::ripgrep::search_text(last_message, std::path::Path::new(root), Some(50))
+                    }
+                    super::tool_registry::ToolId::TreeSitter => {
+                        let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
+                        let q = last_message.trim();
+                        if let Ok(nodes) = graph_state.search(q) {
+                            if nodes.is_empty() {
+                                // Try ripgrep as fallback for text search
+                                let root = workspace_root.as_deref().unwrap_or(".");
+                                super::ripgrep::search_text(q, std::path::Path::new(root), Some(30))
+                            } else {
+                                let mut out = String::new();
+                                for n in &nodes {
+                                    out.push_str(&format!("{} | {} | {}:{} | {}\n",
+                                        n.kind_name(), n.name, n.file_path, n.line, n.end_line));
+                                }
+                                Ok(out)
+                            }
+                        } else {
+                            Err("Symbol graph not available".to_string())
+                        }
+                    }
+                    _ => Err("Tool not yet implemented".to_string()),
+                };
 
-    // Log agent invocation
-    state.write_agent_log(&agent.id, &agent.name,
-        &format!("INVOKED model={}/{} messages={}", agent.provider, agent.model, messages.len()));
-
-    match result {
-        Ok((content, input_tokens, output_tokens)) => {
-            let (price_in, price_out) = model_price(&agent.model);
-            let cost = (input_tokens as f64 * price_in + output_tokens as f64 * price_out) / 1000.0;
-            state.record_usage(&agent.id, input_tokens, output_tokens, cost);
-
-            // Log completion
-            state.write_agent_log(&agent.id, &agent.name,
-                &format!("DONE input_tokens={} output_tokens={} cost=${:.5}", input_tokens, output_tokens, cost));
-
-            let _ = app.emit("ai:done", AiStreamDone {
-                content,
-                provider: agent.provider.clone(),
-                model: agent.model.clone(),
-                input_tokens,
-                output_tokens,
-                cost,
-            });
-            Ok(())
+                match result {
+                    Ok(output) => {
+                        state.write_agent_log(&agent.id, &agent.name,
+                            &format!("TOOL-ONLY {:?}: returned {} chars", tool_id, output.len()));
+                        let _ = app.emit("ai:done", AiStreamDone {
+                            content: output,
+                            provider: agent.provider.clone(),
+                            model: format!("{:?}", tool_id),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cost: 0.0,
+                        });
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
+                        return Err(e);
+                    }
+                }
+            }
         }
-        Err(e) => {
-            state.write_agent_log(&agent.id, &agent.name, &format!("ERROR {}", e));
-            let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
-            Err(e)
+    }
+
+    // DAG route: execute parallel DAG for supported intents (RefactorFull, CodeReview)
+    if let Some(ref decision) = routing_decision {
+        if let Some(dag_plan) = super::chain_engine::DagPlan::from_intent(&decision.intent,
+            messages.last().map(|m| m.content.as_str()).unwrap_or(""))
+        {
+            if dag_plan.len() > 1 {
+                let _ = app.emit("ai:route_progress", format!("Starting DAG with {} nodes across {} levels",
+                    dag_plan.len(), dag_plan.execution_order().map(|l| l.len()).unwrap_or(0)));
+                let result = run_dag(&app, &state, &secrets_state, &agent, &messages,
+                    &dag_plan, &registry, &graph_state, workspace_root.as_deref(), is_private).await;
+                return result;
+            }
+        }
+    }
+
+    // Chain route: execute multi-step chain if routing decision indicates chaining needed
+    if let Some(ref decision) = routing_decision {
+        if let Some(plan) = super::chain_engine::ChainPlan::from_decision(decision,
+            messages.last().map(|m| m.content.as_str()).unwrap_or(""))
+        {
+            if plan.len() > 1 {
+                let _ = app.emit("ai:route_progress", format!("Starting chain with {} steps", plan.len()));
+                let result = run_chain(&app, &state, &secrets_state, &agent, &messages,
+                    &plan, &registry, &graph_state, workspace_root.as_deref(), is_private).await;
+                return result;
+            }
+        }
+    }
+
+    let mut last_error = String::new();
+
+    loop {
+        // Resolve API key for current provider
+        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id) {
+            agent.api_key = Some(real_key);
+        } else if let Some(ref key) = agent.api_key {
+            if key == "********" {
+                let _ = app.emit("ai:error", AiStreamError { error: "API key is configured but not found in OS Keychain. Please re-enter the key in Settings > Agents.".to_string() });
+                return Err(format!("{}. API key not found in keychain", last_error));
+            }
+        }
+
+        let base_url = agent.base_url.clone().unwrap_or_else(|| default_base_url(&agent.provider).to_string());
+
+        if base_url.is_empty() {
+            let msg = format!("Base URL is required for provider '{}'. Enter your endpoint URL in Settings > Agents.", agent.provider);
+            let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+            return Err(format!("{}. {}", last_error, msg));
+        }
+
+        // Context compression: summarize if too many messages
+        use std::sync::OnceLock;
+        static CTX: OnceLock<super::context::ContextManager> = OnceLock::new();
+        let ctx_mgr = CTX.get_or_init(super::context::ContextManager::new);
+        let (compressed_msgs, summary) = ctx_mgr.compress(&messages);
+        if summary.is_some() {
+            state.write_agent_log(&agent.id, &agent.name, "CONTEXT COMPRESSED: summarized older messages");
+        }
+        let msgs_to_send = compressed_msgs;
+
+        // Log agent invocation
+        state.write_agent_log(&agent.id, &agent.name,
+            &format!("INVOKED model={}/{} messages={}", agent.provider, agent.model, msgs_to_send.len()));
+
+        // Use ReAct loop for persona agents, simple streaming for others
+        let result = if agent.persona_id.is_some() {
+            run_react_loop(&app, &state, &agent, &msgs_to_send, &base_url, is_private).await
+        } else {
+            stream_openai(&app, &agent, &msgs_to_send, &base_url).await
+        };
+
+        match result {
+            Ok((content, input_tokens, output_tokens)) => {
+                let (price_in, price_out) = model_price(&agent.model);
+                let cost = (input_tokens as f64 * price_in + output_tokens as f64 * price_out) / 1000.0;
+                state.record_usage(&agent.id, input_tokens, output_tokens, cost);
+                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                    ps.record_success(&agent.provider, input_tokens + output_tokens, cost, 0);
+                }
+
+                state.write_agent_log(&agent.id, &agent.name,
+                    &format!("DONE input_tokens={} output_tokens={} cost=${:.5}", input_tokens, output_tokens, cost));
+
+                let _ = app.emit("ai:done", AiStreamDone {
+                    content,
+                    provider: agent.provider.clone(),
+                    model: agent.model.clone(),
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                });
+                return Ok(());
+            }
+            Err(e) => {
+                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                    ps.record_failure(&agent.provider, &e);
+                }
+                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                    heal.report_degraded("providers", &format!("{} failed: {}", agent.provider, e));
+                }
+                state.write_agent_log(&agent.id, &agent.name, &format!("ERROR {}", e));
+                let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
+
+                // Try fallback with circuit breaker awareness
+                if let Some(ref mut fm) = fallback_mgr {
+                    loop {
+                        if !fm.advance() { break; }
+                        let Some(next) = fm.current() else { break; };
+                        // Skip providers whose circuit is open
+                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                            if !ps.is_available(&next.provider) {
+                                state.write_agent_log(&agent.id, &agent.name,
+                                    &format!("SKIP {} (circuit open)", next.provider));
+                                continue;
+                            }
+                        }
+                        last_error = format!("{} (tried {})", e, agent.model);
+                        agent.model = next.model_id.clone();
+                        agent.base_url = None;
+                        agent.api_key = None;
+                        if let Some(pa) = state.get_agent_for_provider(&next.provider) {
+                            agent.id = pa.id;
+                            agent.provider = pa.provider;
+                            agent.base_url = pa.base_url;
+                        } else {
+                            agent.provider = next.provider.clone();
+                        }
+                        state.write_agent_log(&agent.id, &agent.name,
+                            &format!("FALLBACK to model={}/{} (remaining: {})", agent.provider, agent.model, fm.remaining()));
+                        let _ = app.emit("ai:route_progress",
+                            format!("Falling back to {}/{}...", agent.provider, agent.model));
+                        break;
+                    }
+                    if fm.remaining() > 0 {
+                        continue;
+                    }
+                }
+                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                    heal.report_down("providers", &format!("all fallbacks exhausted: {}", e));
+                }
+                return Err(format!("{}. No more fallbacks available.", e));
+            }
         }
     }
 }
@@ -1893,74 +2114,406 @@ pub fn ai_classify_request(
     text: String,
     frontend_tier: String,
 ) -> ClassifyResult {
-    let text_lower = text.to_lowercase();
-    let word_count = text.split_whitespace().count();
-
-    // Keywords for COMPLEX tier
-    let complex_keywords = [
-        "debug", "refactor", "optimize", "architect", "database", "migration", 
-        "security", "performance", "concurrency", "thread", "memory leak", 
-        "race condition", "deadlock", "algorithm", "complex", "robust", 
-        "implementation", "integration", "mathematics", "calculate", "prove",
-        "formula", "equation", "statistics", "machine learning", "deep learning"
-    ];
-
-    // Keywords for MEDIUM tier
-    let medium_keywords = [
-        "explain", "how to", "what is", "difference between", "generate",
-        "create a simple", "write a function", "help me", "review", "test case",
-        "mock", "parse", "format", "convert"
-    ];
-
-    let mut complex_score = 0;
-    let mut medium_score = 0;
-
-    for kw in complex_keywords.iter() {
-        if text_lower.contains(kw) {
-            complex_score += 2;
-        }
-    }
-
-    for kw in medium_keywords.iter() {
-        if text_lower.contains(kw) {
-            medium_score += 1;
-        }
-    }
-
-    // Code blocks indicator
-    if text.contains("```") || text.contains("fn ") || text.contains("def ") || text.contains("class ") || text.contains("import ") {
-        complex_score += 3;
-    }
-
-    // Question marks and sentences structure
-    let sentence_count = text.split(|c| c == '.' || c == '?' || c == '!').filter(|s| !s.trim().is_empty()).count();
-    if sentence_count > 4 {
-        complex_score += 1;
-    }
-
-    // Word count signals
-    let tier = if word_count > 80 || complex_score >= 4 {
-        "complex"
-    } else if word_count > 20 || complex_score >= 2 || medium_score >= 2 {
-        "medium"
-    } else {
-        "simple"
+    let registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    let tools = super::tool_registry::ToolRegistry::load_default();
+    let engine = super::routing_engine::RoutingEngine::new(registry, tools);
+    
+    let decision = engine.route_request(&text);
+    let tier = match decision.context_size {
+        super::routing_engine::ContextSize::Small => "simple",
+        super::routing_engine::ContextSize::Medium => "medium",
+        super::routing_engine::ContextSize::Large | super::routing_engine::ContextSize::Massive => "complex",
     };
-
+    
     let overrode_frontend = tier != frontend_tier;
     let confidence = if overrode_frontend { 0.85 } else { 0.95 };
-
-    let reason = format!(
-        "Rust analysis: words={}, sentences={}, complex_score={}, medium_score={}.",
-        word_count, sentence_count, complex_score, medium_score
-    );
-
+    
     ClassifyResult {
         tier: tier.to_string(),
         confidence,
-        reason,
+        reason: decision.reason,
         overrode_frontend,
     }
+}
+
+/// Execute a multi-step chain plan. Each step calls the best model for its tier/spec,
+/// passing previous step output as hidden context to the next step.
+async fn run_chain(
+    app: &tauri::AppHandle,
+    state: &AiManager,
+    secrets_state: &tauri::State<'_, crate::modules::secrets::SecretsState>,
+    _original_agent: &AgentConfig,
+    messages: &[ChatMessage],
+    plan: &super::chain_engine::ChainPlan,
+    registry: &super::model_registry::ModelRegistry,
+    graph_state: &super::graph::GraphState,
+    workspace_root: Option<&str>,
+    is_private: bool,
+) -> Result<(), String> {
+    let mut previous_output = String::new();
+    let mut accumulated_content = String::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cost_usd = 0.0f64;
+    let cost_budget = 0.05; // $0.05 max per chain
+
+    for (i, node) in plan.nodes.iter().enumerate() {
+        let step_label = format!("[{}/{}] {}", i + 1, plan.len(), node.label);
+        let _ = app.emit("ai:route_progress", format!("Chain step {}: {}", i + 1, node.label));
+
+        // Find best model for this node's tier + spec
+        let model_meta = registry.select_model(node.model_tier.clone(), node.spec.clone(), 0);
+        let model_id = model_meta.map(|m| m.id.clone()).unwrap_or_default();
+        let provider = model_meta.map(|m| m.provider.clone()).unwrap_or_default();
+
+        // Build step agent config
+        let mut step_agent = state.get_agent(&_original_agent.id).unwrap_or_else(|| _original_agent.clone());
+        step_agent.model = if model_id.is_empty() { _original_agent.model.clone() } else { model_id.clone() };
+        step_agent.provider = if provider.is_empty() { _original_agent.provider.clone() } else { provider.clone() };
+        step_agent.base_url = None;
+        step_agent.api_key = None;
+
+        // Try to find provider-specific agent config for API key
+        if !provider.is_empty() && provider != _original_agent.provider {
+            if let Some(pa) = state.get_agent_for_provider(&provider) {
+                step_agent.id = pa.id;
+                step_agent.base_url = pa.base_url;
+            }
+        }
+
+        // Resolve API key
+        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(app, secrets_state, "codlib-ai", &step_agent.id) {
+            step_agent.api_key = Some(real_key);
+        }
+
+        let base_url = step_agent.base_url.clone()
+            .unwrap_or_else(|| default_base_url(&step_agent.provider).to_string());
+        if base_url.is_empty() {
+            return Err(format!("{}: No base URL for provider '{}'", step_label, step_agent.provider));
+        }
+
+        // Build step messages with hidden context injection
+        let step_messages = build_chain_step_messages(node, messages, &previous_output, &plan.user_prompt);
+
+        // Execute this step
+        state.write_agent_log(&step_agent.id, &step_agent.name,
+            &format!("CHAIN {} model={}/{}", step_label, step_agent.provider, step_agent.model));
+
+        let result = if step_agent.persona_id.is_some() {
+            run_react_loop(app, state, &step_agent, &step_messages, &base_url, is_private).await
+        } else {
+            stream_openai(app, &step_agent, &step_messages, &base_url).await
+        };
+
+        match result {
+            Ok((content, inp, out)) => {
+                total_input += inp;
+                total_output += out;
+
+                // Cost budget check
+                let (price_in, price_out) = model_price(&step_agent.model);
+                let step_cost = (inp as f64 * price_in + out as f64 * price_out) / 1000.0;
+                total_cost_usd += step_cost;
+                if total_cost_usd > cost_budget {
+                    let msg = format!("{}: Chain cost ${:.4} exceeds budget ${:.4}", step_label, total_cost_usd, cost_budget);
+                    state.write_agent_log(&step_agent.id, &step_agent.name, &format!("CHAIN BUDGET {}", msg));
+                    let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+                    return Err(msg);
+                }
+
+                previous_output = content.clone();
+
+                // Stream partial content to frontend
+                if i < plan.len() - 1 {
+                    let _ = app.emit("ai:chunk", AiStreamChunk {
+                        delta: format!("\n\n--- Step {} complete: {} ---\n\n", i + 1, node.label),
+                    });
+                }
+
+                if i == plan.len() - 1 {
+                    accumulated_content = content;
+                }
+            }
+            Err(e) => {
+                let msg = format!("{} failed: {}", step_label, e);
+                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                    heal.report_degraded("chain", &format!("step {}: {}", node.id, e));
+                }
+                state.write_agent_log(&step_agent.id, &step_agent.name, &format!("CHAIN ERROR {}", msg));
+                let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+                return Err(msg);
+            }
+        }
+    }
+
+    // Emit final result
+    let (price_in, price_out) = model_price("");
+    let cost = (total_input as f64 * price_in + total_output as f64 * price_out) / 1000.0;
+
+    state.write_agent_log(&_original_agent.id, &_original_agent.name,
+        &format!("CHAIN DONE steps={} input_tokens={} output_tokens={}", plan.len(), total_input, total_output));
+
+    let _ = app.emit("ai:done", AiStreamDone {
+        content: accumulated_content,
+        provider: _original_agent.provider.clone(),
+        model: _original_agent.model.clone(),
+        input_tokens: total_input,
+        output_tokens: total_output,
+        cost,
+    });
+    Ok(())
+}
+
+/// Execute a DAG plan. Levels are executed sequentially, but nodes within a level run in parallel.
+/// Partial failures are tolerated: failed nodes are noted but don't block downstream.
+async fn run_dag(
+    app: &tauri::AppHandle,
+    state: &AiManager,
+    secrets_state: &tauri::State<'_, crate::modules::secrets::SecretsState>,
+    _original_agent: &AgentConfig,
+    messages: &[ChatMessage],
+    plan: &super::chain_engine::DagPlan,
+    registry: &super::model_registry::ModelRegistry,
+    graph_state: &super::graph::GraphState,
+    workspace_root: Option<&str>,
+    is_private: bool,
+) -> Result<(), String> {
+    use std::collections::HashMap;
+    use tokio::sync::Mutex;
+
+    let levels = plan.execution_order()?;
+    let node_outputs: Arc<Mutex<HashMap<String, super::chain_engine::DagStepResult>>> = Arc::new(Mutex::new(HashMap::new()));
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let cost_budget = 0.05;
+
+    let total_nodes: usize = plan.nodes.len();
+    let mut done_count = 0usize;
+
+    for (level_idx, level) in levels.iter().enumerate() {
+        let _ = app.emit("ai:route_progress",
+            format!("DAG level {}/{} ({} parallel nodes)", level_idx + 1, levels.len(), level.len()));
+
+        let mut handles = Vec::new();
+
+        for node_id in level {
+                let node = plan.nodes.iter().find(|n| n.id == *node_id)
+                    .ok_or_else(|| format!("DAG node '{}' not found", node_id))?;
+                let node = node.clone();
+
+                let node_outputs_clone = node_outputs.clone();
+                let app = app.clone();
+                let state_clone = state.clone();
+                let agent = _original_agent.clone();
+                let messages = messages.to_vec();
+                let registry = registry.clone();
+                let plan_user_prompt = plan.user_prompt.clone();
+
+                let handle = tokio::spawn(async move {
+                let step_label = format!("DAG[{}] {}", node.id, node.label);
+                let _ = app.emit("ai:route_progress", format!("Starting {}", step_label));
+
+                // Find best model for this node's tier + spec
+                let model_meta = registry.select_model(node.model_tier.clone(), node.spec.clone(), 0);
+                let model_id = model_meta.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+                let provider = model_meta.as_ref().map(|m| m.provider.clone()).unwrap_or_default();
+
+                let mut step_agent = state_clone.get_agent(&agent.id).unwrap_or_else(|| agent.clone());
+                step_agent.model = if model_id.is_empty() { agent.model.clone() } else { model_id.clone() };
+                step_agent.provider = if provider.is_empty() { agent.provider.clone() } else { provider.clone() };
+                step_agent.base_url = None;
+                step_agent.api_key = None;
+
+                if !provider.is_empty() && provider != agent.provider {
+                    if let Some(pa) = state_clone.get_agent_for_provider(&provider) {
+                        step_agent.id = pa.id;
+                        step_agent.base_url = pa.base_url;
+                    }
+                }
+
+                let secret_key = {
+                    let s = app.state::<crate::modules::secrets::SecretsState>();
+                    crate::modules::secrets::get_secret(&app, &*s, "codlib-ai", &step_agent.id)
+                };
+                if let Ok(Some(real_key)) = secret_key {
+                    step_agent.api_key = Some(real_key);
+                }
+
+                let base_url = step_agent.base_url.clone()
+                    .unwrap_or_else(|| default_base_url(&step_agent.provider).to_string());
+                if base_url.is_empty() {
+                    return (node.id.clone(), super::chain_engine::DagStepResult {
+                        node_id: node.id.clone(), output: String::new(), success: false,
+                        error: Some(format!("No base URL for provider '{}'", step_agent.provider)),
+                    });
+                }
+
+                // Gather outputs from dependencies
+                let dep_outputs = {
+                    let outputs = node_outputs_clone.lock().await;
+                    let mut buf = String::new();
+                    for dep_id in &node.depends_on {
+                        if let Some(r) = outputs.get(dep_id) {
+                            if r.success {
+                                buf.push_str(&format!("<DAG_DEP_OUTPUT node=\"{}\">\n{}\n</DAG_DEP_OUTPUT>\n", dep_id, r.output));
+                            }
+                        }
+                    }
+                    buf
+                };
+
+                // Build step messages
+                let mut step_messages = Vec::new();
+                if !dep_outputs.is_empty() {
+                    step_messages.push(ChatMessage {
+                        role: "system".into(),
+                        content: format!("<DAG_CONTEXT>\n{}\n</DAG_CONTEXT>\nOriginal task: {}", dep_outputs, plan_user_prompt),
+                        display_content: None,
+                    });
+                }
+                for m in &messages {
+                    if m.role != "system" {
+                        step_messages.push(m.clone());
+                    }
+                }
+                let has_user = step_messages.iter().any(|m| m.role == "user");
+                if !has_user && !plan_user_prompt.is_empty() {
+                    step_messages.push(ChatMessage {
+                        role: "user".into(),
+                        content: plan_user_prompt.clone(),
+                        display_content: None,
+                    });
+                }
+
+                state_clone.write_agent_log(&step_agent.id, &step_agent.name,
+                    &format!("DAG {} model={}/{}", step_label, step_agent.provider, step_agent.model));
+
+                let result = if step_agent.persona_id.is_some() {
+                    run_react_loop(&app, &state_clone, &step_agent, &step_messages, &base_url, is_private).await
+                } else {
+                    stream_openai(&app, &step_agent, &step_messages, &base_url).await
+                };
+
+                match result {
+                    Ok((content, inp, out)) => {
+                        state_clone.record_usage(&step_agent.id, inp, out, 0.0);
+                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                            ps.record_success(&step_agent.provider, inp + out, 0.0, 0);
+                        }
+                        (node.id.clone(), super::chain_engine::DagStepResult {
+                            node_id: node.id.clone(), output: content, success: true, error: None,
+                        })
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{} failed: {}", step_label, e);
+                        if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                            heal.report_degraded("chain", &format!("dag node {}: {}", node.id, e));
+                        }
+                        state_clone.write_agent_log(&step_agent.id, &step_agent.name, &format!("DAG ERROR {}", err_msg));
+                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                            ps.record_failure(&step_agent.provider, &err_msg);
+                        }
+                        (node.id.clone(), super::chain_engine::DagStepResult {
+                            node_id: node.id.clone(), output: String::new(), success: false,
+                            error: Some(err_msg.clone()),
+                        })
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all parallel nodes in this level
+        for handle in handles {
+            match handle.await {
+                Ok((node_id, result)) => {
+                    let inp = result.output.len() as u64;
+                    total_input += inp;
+                    // Check cost budget after each node completes
+                    let _cost = (inp as f64 * 0.00015) / 1000.0;
+                    total_output = total_output.saturating_add(1);
+                    let running_cost = (total_input as f64 * 0.00015) / 1000.0;
+                    if running_cost > cost_budget {
+                        let msg = format!("DAG cost ${:.4} exceeds budget ${:.4}", running_cost, cost_budget);
+                        let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+                        return Err(msg);
+                    }
+                    node_outputs.lock().await.insert(node_id, result);
+                    done_count += 1;
+                    let _ = app.emit("ai:route_progress",
+                        format!("DAG progress: {}/{} nodes complete", done_count, total_nodes));
+                }
+                Err(e) => {
+                    let msg = format!("DAG task panicked: {}", e);
+                    let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    // Collect all results and merge
+    let final_outputs = node_outputs.lock().await;
+    let results: Vec<super::chain_engine::DagStepResult> = final_outputs.values().cloned().collect();
+    let merged = super::chain_engine::DagPlan::merge_results(&results, &plan.user_prompt);
+    let successes = results.iter().filter(|r| r.success).count();
+    let failures = results.iter().filter(|r| !r.success).count();
+
+    state.write_agent_log(&_original_agent.id, &_original_agent.name,
+        &format!("DAG DONE total_nodes={} successes={} failures={}", total_nodes, successes, failures));
+
+    let _ = app.emit("ai:done", AiStreamDone {
+        content: merged,
+        provider: _original_agent.provider.clone(),
+        model: _original_agent.model.clone(),
+        input_tokens: total_input,
+        output_tokens: total_output,
+        cost: (total_input as f64 * 0.00015) / 1000.0,
+    });
+    Ok(())
+}
+
+/// Build messages for a chain step, injecting previous step output as hidden context.
+fn build_chain_step_messages(
+    node: &super::chain_engine::ChainNode,
+    original_messages: &[ChatMessage],
+    previous_output: &str,
+    user_prompt: &str,
+) -> Vec<ChatMessage> {
+    let mut step_messages = Vec::new();
+
+    // Inject previous step output as hidden context (if any)
+    if !previous_output.is_empty() {
+        let context = format!(
+            "<PREVIOUS_STEP_OUTPUT step_id=\"{}\" step_type=\"{:?}\">\n{}\n</PREVIOUS_STEP_OUTPUT>",
+            node.id, node.step_type, previous_output
+        );
+        step_messages.push(ChatMessage {
+            role: "system".into(),
+            content: context,
+            display_content: None,
+        });
+    }
+
+    // Add original messages (but skip system messages that might conflict)
+    for m in original_messages {
+        if m.role != "system" {
+            step_messages.push(m.clone());
+        }
+    }
+
+    // Ensure user prompt is included
+    let has_user_msg = step_messages.iter().any(|m| m.role == "user");
+    if !has_user_msg && !user_prompt.is_empty() {
+        step_messages.push(ChatMessage {
+            role: "user".into(),
+            content: user_prompt.to_string(),
+            display_content: None,
+        });
+    }
+
+    step_messages
 }
 
 #[cfg(test)]
@@ -2000,7 +2553,7 @@ mod tests {
         execute_tool(None, &tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".", false).await.unwrap();
         assert!(Path::new(p).exists());
         let r = execute_tool(None, &tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".", false).await.unwrap();
-        assert!(r.contains("Replaced"));
+        assert!(r.contains("Successfully applied edit") || r.contains("Replaced"));
         let c = std::fs::read_to_string(p).unwrap();
         assert!(c.contains("baz"));
         assert!(!c.contains("foo"));

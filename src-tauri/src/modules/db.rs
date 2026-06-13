@@ -56,6 +56,7 @@ enum DbPool {
     My(sqlx::MySqlPool),
     Sq(sqlx::SqlitePool),
     Mongo(mongodb::Client),
+    #[allow(dead_code)]
     None,
 }
 

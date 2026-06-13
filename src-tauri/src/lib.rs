@@ -1,7 +1,7 @@
 mod modules;
 
 use std::sync::{Arc, Mutex};
-use modules::{ai, db, fs, pio, proxy, pty, secrets, sessions, ssh};
+use modules::{agent_orch, ai, cost_routing, db, fs, graph, pio, project_intel, provider_stats, proxy, pty, review, secrets, self_heal, sessions, ssh};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +24,13 @@ pub fn run() {
         .manage(secrets::SecretsState::default())
         .manage(ssh::SshManager::new())
         .manage(db::DbManager::new())
+        .manage(graph::GraphState::new())
+        .manage(project_intel::ProjectIntelState::new())
+        .manage(review::ReviewState::new())
+        .manage(provider_stats::ProviderStats::new())
+        .manage(agent_orch::AgentOrchestrator::new())
+        .manage(self_heal::SelfHealEngine::new())
+        .manage(cost_routing::CostRouter::new())
         .manage(proxy_state)
         .setup(|app| {
             let handle = app.handle();
@@ -65,6 +72,7 @@ pub fn run() {
             sessions::ai_get_session,
             sessions::ai_save_session,
             sessions::ai_delete_session,
+            sessions::recover_last_session,
             proxy::get_proxy_port,
             proxy::get_proxy_logs,
             fs::fs_list_dir,
@@ -78,6 +86,7 @@ pub fn run() {
             fs::fs_search_files,
             fs::fs_search_contents,
             fs::sys_check_installed,
+            fs::sys_run_diagnostics,
             fs::ssh_list_dir,
             fs::git_get_status,
             fs::git_commit,
@@ -118,6 +127,43 @@ pub fn run() {
             pio::pio_init,
             pio::pio_run,
             pio::pio_list_boards,
+            // Project Intelligence commands
+            project_intel::project_detect,
+            project_intel::project_get_context,
+            // Review System commands
+            review::review_text,
+            review::review_file,
+            // Provider Stats commands
+            provider_stats::provider_get_stats,
+            provider_stats::provider_reset_stats,
+            // Agent Orchestration commands
+            agent_orch::orch_get_agents,
+            agent_orch::orch_add_agent,
+            agent_orch::orch_remove_agent,
+            agent_orch::orch_get_tasks,
+            // Knowledge graph commands
+            graph::graph_index_workspace,
+            graph::graph_search,
+            graph::graph_find_by_file,
+            graph::graph_find_by_name,
+            graph::graph_definitions,
+            graph::graph_references,
+            graph::graph_outgoing,
+            graph::graph_traverse,
+            graph::graph_subgraph,
+            graph::graph_watch,
+            graph::graph_unwatch,
+            graph::graph_stats,
+            // Cost Routing commands
+            cost_routing::cost_get_summary,
+            cost_routing::cost_set_budget,
+            cost_routing::cost_recommend,
+            // Self-Healing commands
+            self_heal::heal_get_status,
+            self_heal::heal_restart_component,
+            self_heal::heal_check_startup,
+            self_heal::heal_clear_crash_marker_cmd,
+            self_heal::heal_set_crash_marker_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
