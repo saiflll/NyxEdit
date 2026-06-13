@@ -74,6 +74,45 @@ export async function getGlobalSettingsPath(): Promise<string | null> {
   }
 }
 
+export async function getGlobalFilePath(fileName: string): Promise<string | null> {
+  try {
+    const dir = await appDataDir();
+    if (!dir) return null;
+    const pathSeparator = dir.includes("\\") ? "\\" : "/";
+    return `${dir.replace(/[\\/]+$/, "")}${pathSeparator}${fileName}`;
+  } catch (e) {
+    console.error("Failed to get app data directory:", e);
+    return null;
+  }
+}
+
+export async function saveGlobalFile(fileName: string, data: any): Promise<void> {
+  try {
+    const filePath = await getGlobalFilePath(fileName);
+    if (filePath) {
+      await invoke("fs_write_file", { path: filePath, content: JSON.stringify(data, null, 2) });
+    }
+  } catch (e) {
+    console.error(`Failed to save ${fileName}:`, e);
+  }
+}
+
+export async function loadGlobalFile<T>(fileName: string, defaultValue: T): Promise<T> {
+  try {
+    const filePath = await getGlobalFilePath(fileName);
+    if (filePath) {
+      const exists = await invoke<boolean>("fs_exists", { path: filePath });
+      if (exists) {
+        const content = await invoke<string>("fs_read_file", { path: filePath });
+        return JSON.parse(content) as T;
+      }
+    }
+  } catch (e) {
+    console.error(`Failed to load ${fileName}:`, e);
+  }
+  return defaultValue;
+}
+
 export async function saveGlobalNyxConfig(data: GlobalSettings): Promise<void> {
   try {
     const filePath = await getGlobalSettingsPath();

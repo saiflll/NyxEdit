@@ -87,11 +87,13 @@ pub struct SymbolEdge {
     pub line: usize,
 }
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SymbolGraph {
     pub nodes: HashMap<String, SymbolNode>,
     pub edges: Vec<SymbolEdge>,
+    #[serde(skip)]
     adjacency: HashMap<String, Vec<(String, EdgeKind)>>,
+    #[serde(skip)]
     reverse_adjacency: HashMap<String, Vec<(String, EdgeKind)>>,
 }
 
@@ -103,6 +105,30 @@ impl SymbolGraph {
             adjacency: HashMap::new(),
             reverse_adjacency: HashMap::new(),
         }
+    }
+
+    pub fn rebuild_adjacency(&mut self) {
+        self.adjacency.clear();
+        self.reverse_adjacency.clear();
+        for edge in &self.edges {
+            self.adjacency.entry(edge.source_id.clone()).or_default().push((edge.target_id.clone(), edge.kind.clone()));
+            self.reverse_adjacency.entry(edge.target_id.clone()).or_default().push((edge.source_id.clone(), edge.kind.clone()));
+        }
+    }
+
+    pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)
+    }
+
+    pub fn load_from(path: &std::path::Path) -> std::io::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        let mut graph: Self = serde_json::from_str(&json)?;
+        graph.rebuild_adjacency();
+        Ok(graph)
     }
 
     pub fn add_node(&mut self, node: SymbolNode) {

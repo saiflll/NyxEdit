@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { addToast, activeSshProfile } from "$lib/stores.svelte";
   import { onMount } from "svelte";
+  import { loadGlobalFile, saveGlobalFile } from "$lib/nyxConfig";
 
   type SshProfile = {
     id: string;
@@ -36,17 +37,25 @@
     loadProfiles();
   });
 
-  function loadProfiles() {
-    try {
-      const raw = localStorage.getItem("nyxedit-ssh-profiles");
-      if (raw) profiles = JSON.parse(raw);
-    } catch {}
+  async function loadProfiles() {
+    let loaded = await loadGlobalFile<SshProfile[]>("ssh_profiles.json", []);
+    if (loaded.length > 0) {
+      profiles = loaded;
+    } else {
+      // Migrate from localStorage
+      try {
+        const raw = localStorage.getItem("nyxedit-ssh-profiles");
+        if (raw) {
+          profiles = JSON.parse(raw);
+          await saveGlobalFile("ssh_profiles.json", profiles);
+          localStorage.removeItem("nyxedit-ssh-profiles");
+        }
+      } catch {}
+    }
   }
 
-  function saveProfiles() {
-    try {
-      localStorage.setItem("nyxedit-ssh-profiles", JSON.stringify(profiles));
-    } catch {}
+  async function saveProfiles() {
+    await saveGlobalFile("ssh_profiles.json", profiles);
   }
 
   async function handleAddProfile() {

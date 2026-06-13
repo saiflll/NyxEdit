@@ -8,11 +8,42 @@ use super::symbol_graph::{EdgeKind, SymbolGraph, SymbolNode};
 pub struct GraphState {
     pub graph: Arc<Mutex<SymbolGraph>>,
     watcher_root: Arc<Mutex<Option<String>>>,
+    workspace_root: Arc<Mutex<Option<String>>>,
 }
 
 impl GraphState {
     pub fn new() -> Self {
-        Self { graph: Arc::new(Mutex::new(SymbolGraph::new())), watcher_root: Arc::new(Mutex::new(None)) }
+        Self { graph: Arc::new(Mutex::new(SymbolGraph::new())), watcher_root: Arc::new(Mutex::new(None)), workspace_root: Arc::new(Mutex::new(None)) }
+    }
+
+    fn nyx_path(&self, root: &str) -> PathBuf {
+        std::path::Path::new(root).join(".nyx").join("symbol_graph.json")
+    }
+
+    pub fn try_load_workspace(&self, root: &str) -> Result<bool, String> {
+        let path = self.nyx_path(root);
+        if path.exists() {
+            match SymbolGraph::load_from(&path) {
+                Ok(g) => {
+                    let count = g.nodes.len();
+                    *self.graph.lock().map_err(|e| format!("Lock: {}", e))? = g;
+                    *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
+                    Ok(true)
+                }
+                Err(e) => Err(format!("Failed to load graph: {}", e))
+            }
+        } else {
+            *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
+            Ok(false)
+        }
+    }
+
+    pub fn save(&self) -> Result<(), String> {
+        let root = self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))?;
+        let root = root.as_ref().ok_or("No workspace root set")?;
+        let path = self.nyx_path(root);
+        let g = self.graph.lock().map_err(|e| format!("Lock: {}", e))?;
+        g.save_to(&path).map_err(|e| format!("Failed to save graph: {}", e))
     }
 
     pub fn index_workspace_with_progress(&self, app: &tauri::AppHandle, root: &str) -> Result<String, String> {
@@ -58,6 +89,14 @@ impl GraphState {
         
         // Notify end
         let _ = app.emit("graph:index_end", count);
+
+        // Save to .nyx/
+        *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
+        let save_path = self.nyx_path(root);
+        if let Some(parent) = save_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = g.save_to(&save_path);
 
         Ok(msg)
     }
@@ -312,4 +351,12 @@ pub fn graph_stats(
     state: tauri::State<'_, GraphState>,
 ) -> Result<(usize, usize), String> {
     state.stats()
+}
+
+#[tauri::command]
+pub fn graph_load_workspace(
+    state: tauri::State<'_, GraphState>,
+    root: String,
+) -> Result<bool, String> {
+    state.try_load_workspace(&root)
 }

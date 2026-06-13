@@ -154,6 +154,7 @@ pub fn run() {
             graph::graph_watch,
             graph::graph_unwatch,
             graph::graph_stats,
+            graph::graph_load_workspace,
             // Cost Routing commands
             cost_routing::cost_get_summary,
             cost_routing::cost_set_budget,

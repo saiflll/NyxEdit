@@ -19,6 +19,7 @@
   import { Play, Plus, ChevronDown, ChevronRight } from "lucide-svelte";
   import { currentDir, activeFile, activeTerminalSessionId } from "../stores.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { loadGlobalFile, saveGlobalFile } from "$lib/nyxConfig";
 
   let expandedWorkspace = $state(true);
   let expandedUniversal = $state(true);
@@ -71,16 +72,23 @@
       }
     }
 
-    // 2. Load universal runners
-    try {
-      const raw = localStorage.getItem("nyxedit-universal-runners");
-      if (raw) {
-        universalRunners = JSON.parse(raw) as RunnerDef[];
-      } else {
+    // 2. Load universal runners from disk (with localStorage fallback)
+    let loaded = await loadGlobalFile<RunnerDef[]>("runners.json", []);
+    if (loaded.length > 0) {
+      universalRunners = loaded;
+    } else {
+      try {
+        const raw = localStorage.getItem("nyxedit-universal-runners");
+        if (raw) {
+          universalRunners = JSON.parse(raw) as RunnerDef[];
+          // Migrate to disk
+          saveGlobalFile("runners.json", universalRunners);
+        } else {
+          universalRunners = [];
+        }
+      } catch {
         universalRunners = [];
       }
-    } catch {
-      universalRunners = [];
     }
   }
 
@@ -97,12 +105,8 @@
     }
   }
 
-  function saveUniversalRunners() {
-    try {
-      localStorage.setItem("nyxedit-universal-runners", JSON.stringify(universalRunners));
-    } catch (e) {
-      console.error("Failed to save universal runners:", e);
-    }
+  async function saveUniversalRunners() {
+    await saveGlobalFile("runners.json", universalRunners);
   }
 
   $effect(() => {

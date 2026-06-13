@@ -36,6 +36,7 @@ pub trait ReviewRule: Send + Sync {
     fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding>;
 }
 
+// ── Rule 1: TODO/FIXME ──
 struct TodoCheck;
 impl ReviewRule for TodoCheck {
     fn id(&self) -> &'static str { "no-todo" }
@@ -59,6 +60,7 @@ impl ReviewRule for TodoCheck {
     }
 }
 
+// ── Rule 2: Debug prints ──
 struct DebugPrintCheck;
 impl ReviewRule for DebugPrintCheck {
     fn id(&self) -> &'static str { "no-debug-print" }
@@ -67,10 +69,12 @@ impl ReviewRule for DebugPrintCheck {
         let mut findings = Vec::new();
         let patterns: &[&str] = if file.ends_with(".rs") {
             &["println!", "eprintln!", "dbg!("]
-        } else if file.ends_with(".js") || file.ends_with(".ts") {
+        } else if file.ends_with(".js") || file.ends_with(".ts") || file.ends_with(".jsx") || file.ends_with(".tsx") {
             &["console.log", "console.debug", "debugger"]
         } else if file.ends_with(".py") {
             &["print(", "pprint.pprint"]
+        } else if file.ends_with(".go") {
+            &["fmt.Println", "fmt.Print(", "log.Println"]
         } else { return findings };
 
         for (i, line) in content.lines().enumerate() {
@@ -91,6 +95,7 @@ impl ReviewRule for DebugPrintCheck {
     }
 }
 
+// ── Rule 3: Long function ──
 struct LongFunctionCheck;
 impl ReviewRule for LongFunctionCheck {
     fn id(&self) -> &'static str { "long-function" }
@@ -143,7 +148,13 @@ fn extract_fn_name(line: &str, file: &str) -> Option<String> {
             let name = rest.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
             if !name.is_empty() { return Some(name.to_string()); }
         }
-    } else if file.ends_with(".js") || file.ends_with(".ts") {
+    } else if file.ends_with(".go") {
+        if let Some(idx) = line.find("func ") {
+            let rest = &line[idx + 5..];
+            let name = rest.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
+            if !name.is_empty() { return Some(name.to_string()); }
+        }
+    } else if file.ends_with(".js") || file.ends_with(".ts") || file.ends_with(".jsx") || file.ends_with(".tsx") {
         if let Some(idx) = line.find("function ") {
             let rest = &line[idx + 9..];
             let name = rest.split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or("");
@@ -159,6 +170,176 @@ fn extract_fn_name(line: &str, file: &str) -> Option<String> {
     None
 }
 
+// ── Rule 4: Hardcoded secrets ──
+struct HardcodedSecretsCheck;
+impl ReviewRule for HardcodedSecretsCheck {
+    fn id(&self) -> &'static str { "hardcoded-secret" }
+    fn description(&self) -> &'static str { "Detect hardcoded API keys, passwords, tokens" }
+    fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding> {
+        let mut findings = Vec::new();
+        let secret_patterns = ["api_key", "api_secret", "apiKey", "apiSecret", "password", "passwd",
+            "auth_token", "secret_key", "secretKey", "access_token", "bearer", "private_key"];
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with("/*") { continue; }
+            let lower = trimmed.to_lowercase();
+            for pat in &secret_patterns {
+                if lower.contains(pat) && (trimmed.contains('=') || trimmed.contains(':')) {
+                    findings.push(ReviewFinding {
+                        file: file.to_string(),
+                        line: i + 1,
+                        severity: ReviewSeverity::Error,
+                        rule_id: "hardcoded-secret".into(),
+                        message: format!("Possible hardcoded secret: `{}`", pat),
+                        suggestion: "Use environment variables or a secrets manager instead.".into(),
+                    });
+                    break;
+                }
+            }
+        }
+        findings
+    }
+}
+
+// ── Rule 5: Empty catch/except ──
+struct EmptyCatchCheck;
+impl ReviewRule for EmptyCatchCheck {
+    fn id(&self) -> &'static str { "empty-catch" }
+    fn description(&self) -> &'static str { "Detect empty catch/except blocks that silently swallow errors" }
+    fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding> {
+        let mut findings = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            let t = line.trim();
+            if file.ends_with(".rs") {
+                if t.contains("Err(_)") && t.contains("=>") && line.contains("{}") {
+                    findings.push(ReviewFinding {
+                        file: file.to_string(),
+                        line: i + 1,
+                        severity: ReviewSeverity::Error,
+                        rule_id: "empty-catch".into(),
+                        message: "Empty error match arm that discards error".into(),
+                        suggestion: "Handle the error explicitly or log it.".into(),
+                    });
+                }
+            } else if file.ends_with(".js") || file.ends_with(".ts") || file.ends_with(".jsx") || file.ends_with(".tsx") {
+                if t.starts_with("catch") && (t.ends_with("{}") || t.contains("{}")) {
+                    findings.push(ReviewFinding {
+                        file: file.to_string(),
+                        line: i + 1,
+                        severity: ReviewSeverity::Error,
+                        rule_id: "empty-catch".into(),
+                        message: "Empty catch block silently swallows error".into(),
+                        suggestion: "At minimum log the error, or handle it properly.".into(),
+                    });
+                }
+            } else if file.ends_with(".py") {
+                if t.contains("except") && (t.ends_with(":") || t.contains("pass")) {
+                    if let Some(next) = content.lines().nth(i + 1) {
+                        if next.trim() == "pass" {
+                            findings.push(ReviewFinding {
+                                file: file.to_string(),
+                                line: i + 1,
+                                severity: ReviewSeverity::Error,
+                                rule_id: "empty-catch".into(),
+                                message: "Empty except block silently swallows error".into(),
+                                suggestion: "At minimum log the error, or handle it properly.".into(),
+                            });
+                        }
+                    }
+                }
+            } else if file.ends_with(".go") {
+                if t == "_ = err" || t.contains("err != nil") && line.contains("{}") {
+                    findings.push(ReviewFinding {
+                        file: file.to_string(),
+                        line: i + 1,
+                        severity: ReviewSeverity::Warning,
+                        rule_id: "empty-catch".into(),
+                        message: "Error ignored or handled with empty block".into(),
+                        suggestion: "Handle the error explicitly.".into(),
+                    });
+                }
+            }
+        }
+        findings
+    }
+}
+
+// ── Rule 6: Deep nesting ──
+struct DeepNestingCheck;
+impl ReviewRule for DeepNestingCheck {
+    fn id(&self) -> &'static str { "deep-nesting" }
+    fn description(&self) -> &'static str { "Detect overly nested code (>4 levels)" }
+    fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding> {
+        let mut findings = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            let indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            let level = if line.starts_with('\t') { indent } else { indent / 2 };
+            if level > 4 && line.trim().len() > 0 {
+                findings.push(ReviewFinding {
+                    file: file.to_string(),
+                    line: i + 1,
+                    severity: ReviewSeverity::Warning,
+                    rule_id: "deep-nesting".into(),
+                    message: format!("Deep nesting level ({})", level),
+                    suggestion: "Extract inner logic into a separate function.".into(),
+                });
+                break;
+            }
+        }
+        findings
+    }
+}
+
+// ── Rule 7: Long lines ──
+struct LongLineCheck;
+impl ReviewRule for LongLineCheck {
+    fn id(&self) -> &'static str { "long-line" }
+    fn description(&self) -> &'static str { "Detect lines exceeding 120 characters" }
+    fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding> {
+        let mut findings = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            let visible = line.len();
+            if visible > 120 {
+                findings.push(ReviewFinding {
+                    file: file.to_string(),
+                    line: i + 1,
+                    severity: ReviewSeverity::Info,
+                    rule_id: "long-line".into(),
+                    message: format!("Line is {} characters long", visible),
+                    suggestion: "Break the line into multiple lines for readability.".into(),
+                });
+            }
+        }
+        findings
+    }
+}
+
+// ── Rule 8: Unsafe unwrap (Rust) ──
+struct UnsafeUnwrapCheck;
+impl ReviewRule for UnsafeUnwrapCheck {
+    fn id(&self) -> &'static str { "unsafe-unwrap" }
+    fn description(&self) -> &'static str { "Detect unsafe .unwrap() calls that can panic" }
+    fn check(&self, file: &str, content: &str) -> Vec<ReviewFinding> {
+        let mut findings = Vec::new();
+        if !file.ends_with(".rs") { return findings; }
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") { continue; }
+            if trimmed.contains(".unwrap(") && !trimmed.contains(".unwrap_or") && !trimmed.contains(".unwrap_err") {
+                findings.push(ReviewFinding {
+                    file: file.to_string(),
+                    line: i + 1,
+                    severity: ReviewSeverity::Warning,
+                    rule_id: "unsafe-unwrap".into(),
+                    message: "Unsafe `.unwrap()` call that can panic at runtime".into(),
+                    suggestion: "Use `.unwrap_or()`, `.unwrap_or_else()`, or proper error handling with `?`.".into(),
+                });
+            }
+        }
+        findings
+    }
+}
+
 impl ReviewEngine {
     pub fn default_rules() -> Self {
         Self {
@@ -166,6 +347,11 @@ impl ReviewEngine {
                 Box::new(TodoCheck),
                 Box::new(DebugPrintCheck),
                 Box::new(LongFunctionCheck),
+                Box::new(HardcodedSecretsCheck),
+                Box::new(EmptyCatchCheck),
+                Box::new(DeepNestingCheck),
+                Box::new(LongLineCheck),
+                Box::new(UnsafeUnwrapCheck),
             ],
         }
     }

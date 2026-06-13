@@ -9,6 +9,7 @@ pub enum ProjectFramework {
     NodeYarn,
     PythonPoetry,
     PythonPip,
+    GoMod,
     PlatformIO,
     Docker,
     Unknown,
@@ -20,6 +21,7 @@ pub struct ProjectContext {
     pub has_tests: bool,
     pub has_ci: bool,
     pub has_docker: bool,
+    pub has_kubernetes: bool,
     pub file_count: usize,
     pub language: String,
     pub src_dirs: Vec<String>,
@@ -31,17 +33,19 @@ impl ProjectContext {
         let has_tests = root.join("tests").exists() || root.join("test").exists() || root.join("__tests__").exists();
         let has_ci = root.join(".github").exists() || root.join(".gitlab-ci.yml").exists();
         let has_docker = root.join("Dockerfile").exists() || root.join("docker-compose.yml").exists();
+        let has_kubernetes = root.join("k8s").exists() || root.join("kubernetes").exists() || root.join("deploy/k8s").exists() || root.join("deploy/kubernetes").exists();
         let src_dirs = detect_src_dirs(root);
         let file_count = count_source_files(root);
         let language = match framework {
             ProjectFramework::RustCargo => "Rust".to_string(),
             ProjectFramework::NodeNpm | ProjectFramework::NodeYarn => "JavaScript/TypeScript".to_string(),
             ProjectFramework::PythonPoetry | ProjectFramework::PythonPip => "Python".to_string(),
+            ProjectFramework::GoMod => "Go".to_string(),
             ProjectFramework::PlatformIO => "C/C++".to_string(),
             _ => "Unknown".to_string(),
         };
 
-        Self { framework, has_tests, has_ci, has_docker, file_count, language, src_dirs }
+        Self { framework, has_tests, has_ci, has_docker, has_kubernetes, file_count, language, src_dirs }
     }
 
     pub fn framework_label(&self) -> &'static str {
@@ -51,6 +55,7 @@ impl ProjectContext {
             ProjectFramework::NodeYarn => "Node.js (yarn)",
             ProjectFramework::PythonPoetry => "Python (Poetry)",
             ProjectFramework::PythonPip => "Python (pip)",
+            ProjectFramework::GoMod => "Go",
             ProjectFramework::PlatformIO => "PlatformIO",
             ProjectFramework::Docker => "Docker",
             ProjectFramework::Unknown => "Unknown",
@@ -64,6 +69,7 @@ fn detect_framework(root: &Path) -> ProjectFramework {
     if root.join("package-lock.json").exists() || root.join("package.json").exists() { return ProjectFramework::NodeNpm; }
     if root.join("pyproject.toml").exists() && root.join("poetry.lock").exists() { return ProjectFramework::PythonPoetry; }
     if root.join("requirements.txt").exists() || root.join("setup.py").exists() { return ProjectFramework::PythonPip; }
+    if root.join("go.mod").exists() { return ProjectFramework::GoMod; }
     if root.join("platformio.ini").exists() { return ProjectFramework::PlatformIO; }
     if root.join("Dockerfile").exists() { return ProjectFramework::Docker; }
 
@@ -77,6 +83,9 @@ fn detect_framework(root: &Path) -> ProjectFramework {
                 }
                 if path.join("Cargo.toml").exists() {
                     return ProjectFramework::RustCargo;
+                }
+                if path.join("go.mod").exists() {
+                    return ProjectFramework::GoMod;
                 }
                 if path.join("platformio.ini").exists() {
                     return ProjectFramework::PlatformIO;
@@ -123,7 +132,7 @@ fn count_source_files(root: &Path) -> usize {
             } else if path.is_file() {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     match ext {
-                        "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "c" | "cpp" | "h" | "hpp" => count += 1,
+                        "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "c" | "cpp" | "h" | "hpp" => count += 1,
                         _ => {}
                     }
                 }

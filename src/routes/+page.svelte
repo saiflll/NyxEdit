@@ -12,6 +12,7 @@
   import CodeEditor from "$lib/components/CodeEditor.svelte";
   import ViewerRouter from "$lib/components/viewers/ViewerRouter.svelte";
   import Settings from "$lib/components/Settings.svelte";
+  import IntelPanel from "$lib/components/IntelPanel.svelte";
   import Runner from "$lib/components/Runner.svelte";
   import Toast from "$lib/components/Toast.svelte";
   import ContextMenu from "$lib/components/ContextMenu.svelte";
@@ -24,14 +25,14 @@
   import MQTTClient from "$lib/components/MQTTClient.svelte";
   import DatabaseClient from "$lib/components/DatabaseClient.svelte";
   import SSHExplorer from "$lib/components/SSHExplorer.svelte";
-  import { currentDir, addToast, aiSendRequest, activeSshProfile, type Agent } from "$lib/stores.svelte";
+  import { currentDir, addToast, aiSendRequest, activeSshProfile, activeFile, fileContent, type Agent } from "$lib/stores.svelte";
   import { onMount } from "svelte";
   import { getStoredTheme, getStoredFont, applyTheme, applyFont } from "$lib/themes";
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
   import { initIdle } from "$lib/idle.svelte";
 
   type TabType = "file" | "settings" | "setup" | "terminal" | "preview" | "ssh_session" | "private" | "api_client" | "db_query" | "diff" | "ai_chat";
-  type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | null;
+  type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | "intel" | null;
 
   let proxyPort = $state(0);
 
@@ -59,7 +60,7 @@
   let workspaceMode = $state<"explorer" | "git" | "ssh_explorer">("explorer");
   let sidebarWidth = $state(220);
 
-  let activityViews = $state<("files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database")[]>([
+  let activityViews = $state<("files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | "intel")[]>([
     "files",
     "search",
     "ssh",
@@ -67,7 +68,8 @@
     "mqtt",
     "platformio",
     "extensions",
-    "database"
+    "database",
+    "intel"
   ]);
   let dragIconIndex = $state<number | null>(null);
 
@@ -454,6 +456,11 @@
 
   function setActiveTab(id: string) {
     activeTabId = id;
+    const tab = tabs.find(t => t.id === id);
+    if (tab?.type === "file" && tab.filePath) {
+      activeFile.set(tab.filePath);
+      if (tab.fileContent !== undefined) fileContent.set(tab.fileContent);
+    }
   }
 
   const activeTab = $derived(tabs.find((t) => t.id === activeTabId));
@@ -467,18 +474,25 @@
 
   function onFileOpen(path: string) {
     const existing = tabs.find((t) => t.filePath === path);
-    if (existing) { activeTabId = existing.id; return; }
+    if (existing) {
+      activeTabId = existing.id;
+      activeFile.set(path);
+      if (existing.fileContent !== undefined) fileContent.set(existing.fileContent);
+      return;
+    }
     const name = path.split(/[\\/]/).pop() || "Untitled";
     const ext = name.split(".").pop()?.toLowerCase() || "";
     if (BINARY_EXTS.has(ext)) {
-      // Binary/media — open immediately without reading content as text
-      addTab("file", { label: name, filePath: path, fileContent: "" });
+      const tabId = addTab("file", { label: name, filePath: path, fileContent: "" });
+      activeFile.set(path);
+      fileContent.set("");
       return;
     }
+    activeFile.set(path);
     invoke<string>("fs_read_file", { path }).then((content) => {
+      fileContent.set(content);
       addTab("file", { label: name, filePath: path, fileContent: content });
     }).catch(() => {
-      // If we can't read as text, still open the tab and let ViewerRouter handle it
       addTab("file", { label: name, filePath: path, fileContent: "" });
     });
   }
@@ -699,7 +713,7 @@
 
   // ─── Sidebar ──────────────────────────────────
   const SIDEBAR_LABELS: Record<string, string> = {
-    files: "Workspace", search: "Search", ssh: "SSH Tree", postman: "API Client", mqtt: "MQTT Client", platformio: "Platform IO", extensions: "Extensions", database: "Database Client",
+    files: "Workspace", search: "Search", ssh: "SSH Tree", postman: "API Client", mqtt: "MQTT Client", platformio: "Platform IO", extensions: "Extensions", database: "Database Client", intel: "Intel",
   };
 
   function toggleSidebar(view: SidebarView) {
@@ -993,6 +1007,8 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
             {:else if view === "database"}
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            {:else if view === "intel"}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             {/if}
           </button>
         {/each}
@@ -1172,6 +1188,8 @@
             </div>
           {:else if sidebarView === "database"}
             <DatabaseClient isSidebar={true} onOpenQuery={(connId: string, label: string) => openDbQueryTab(connId, label)} />
+          {:else if sidebarView === "intel"}
+            <IntelPanel />
           {/if}
         </div>
         <div class="sidebar-resize" onmousedown={onResizeStart} role="presentation"></div>
