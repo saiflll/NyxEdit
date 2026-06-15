@@ -81,6 +81,7 @@ export const activeFile = writable<string | null>(null);
 export const fileContent = writable<string>("");
 export const fileEntries = writable<FileEntry[]>([]);
 export const currentDir = writable<string>("");
+export const workspaceFolders = writable<string[]>([]);
 
 // Terminal state
 export const terminalSessions = writable<Map<string, any>>(new Map());
@@ -100,9 +101,31 @@ export const splitLayout = writable<string>("horizontal"); // "horizontal" | "ve
 // File explorer state
 export function loadDir(dir: string) {
   currentDir.set(dir);
+  workspaceFolders.set([dir]);
   invoke<FileEntry[]>("fs_list_dir", { path: dir }).then((entries) => {
     fileEntries.set(entries);
   });
+  invoke("project_detect", { root: dir }).catch((err) => {
+    console.warn("Failed to detect project framework:", err);
+  });
+}
+
+export function loadWorkspace(folders: string[]) {
+  workspaceFolders.set(folders);
+  if (folders.length > 0) {
+    currentDir.set(folders[0]);
+    Promise.all(folders.map(f => invoke<FileEntry[]>("fs_list_dir", { path: f }).catch(() => [])))
+      .then((results) => {
+        const merged = results.flat();
+        fileEntries.set(merged);
+      });
+    invoke("project_detect", { root: folders[0] }).catch((err) => {
+      console.warn("Failed to detect project framework:", err);
+    });
+  } else {
+    currentDir.set("");
+    fileEntries.set([]);
+  }
 }
 
 export function openFile(path: string) {

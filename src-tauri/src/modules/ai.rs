@@ -143,7 +143,7 @@ pub struct AgentUsage {
     pub total_cost: f64,
 }
 
-fn model_price(model: &str) -> (f64, f64) {
+pub fn model_price(model: &str) -> (f64, f64) {
     let m = model.to_lowercase();
     if m.contains("gpt-4o-mini") {
         (0.00015, 0.0006)
@@ -362,7 +362,7 @@ fn resolve_system_prompt(agent: &AgentConfig) -> String {
     agent.system_prompt.clone().unwrap_or_default()
 }
 
-fn default_base_url(provider: &str) -> &'static str {
+pub fn default_base_url(provider: &str) -> &'static str {
     match provider {
         "vercel" => "https://ai-gateway.vercel.sh/v1",
         "ollama" => "http://localhost:11434/v1",
@@ -535,7 +535,7 @@ pub async fn ai_chat(
     })
 }
 
-async fn stream_openai(
+pub async fn stream_openai(
     app: &tauri::AppHandle,
     agent: &AgentConfig,
     messages: &[ChatMessage],
@@ -1428,8 +1428,14 @@ pub async fn ai_chat_stream(
     let tools = super::tool_registry::ToolRegistry::load_default();
     let engine = super::routing_engine::RoutingEngine::new(registry.clone(), tools);
     let routing_decision = if is_auto_mode {
+        use tauri::Manager;
         let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
-        let decision = engine.route_request(last_message);
+        let intel_state = app.state::<crate::modules::project_intel::ProjectIntelState>();
+        let decision = if let Ok(ctx) = intel_state.get() {
+            engine.route_with_context(last_message, &ctx)
+        } else {
+            engine.route_request(last_message)
+        };
         state.write_agent_log(&agent.id, &agent.name, &format!("AUTO ROUTING: intent={:?} size={:?} output={:?} reasoning={:?} tool={:?} model={:?}", 
             decision.intent, decision.context_size, decision.output_type, decision.reasoning_tier, decision.tool_route, decision.model_route));
         let _ = app.emit("ai:route_progress", format!("Auto routing: intent={:?}, selected model={:?}", decision.intent, decision.model_route));
@@ -1522,6 +1528,37 @@ pub async fn ai_chat_stream(
                     }
                 }
             }
+        }
+    }
+
+    // Stage 9: Multi-Agent Orchestrator delegation route
+    if let Some(ref decision) = routing_decision {
+        if (decision.intent == super::routing_engine::Intent::RefactorFull || decision.intent == super::routing_engine::Intent::CodeReview)
+            && matches!(decision.context_size, super::routing_engine::ContextSize::Large | super::routing_engine::ContextSize::Massive)
+        {
+            use tauri::Manager;
+            let role = match decision.intent {
+                super::routing_engine::Intent::CodeReview => super::agent_orch::SubAgentRole::CodeReviewer,
+                super::routing_engine::Intent::RefactorFull => super::agent_orch::SubAgentRole::Refactorer,
+                _ => super::agent_orch::SubAgentRole::CodeReviewer,
+            };
+            
+            let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
+            let _ = app.emit("ai:route_progress", "[Auto Mode] Context size is large. Delegating task to Multi-Agent Orchestrator...".to_string());
+            
+            let orch_state = app.state::<crate::modules::agent_orch::AgentOrchestrator>();
+            
+            let task_id = super::agent_orch::delegate_and_run(
+                &app,
+                &orch_state,
+                &state,
+                role,
+                prompt,
+                messages.clone(),
+            )?;
+            
+            let _ = app.emit("ai:route_progress", format!("Delegated orchestrator task successfully spawned: {}", task_id));
+            return Ok(());
         }
     }
 

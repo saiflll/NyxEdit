@@ -1,11 +1,14 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { currentDir, openFile, addToast } from "../stores.svelte";
+  import { currentDir, workspaceFolders, openFile, addToast } from "../stores.svelte";
   import CodeReviewPanel from "./CodeReviewPanel.svelte";
   import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
+  import { onMount } from "svelte";
 
-  let workspaceDir = $derived($currentDir);
+  let foldersList = $state<string[]>([]);
+  let activeFolder = $state("");
+  let workspaceDir = $derived(activeFolder);
 
   let graphSectionOpen = $state(true);
   let reviewSectionOpen = $state(false);
@@ -33,6 +36,26 @@
     has_docker: boolean; has_kubernetes: boolean; file_count: number; language: string; src_dirs: string[];
   } | null>(null);
   let projectIntelError = $state("");
+
+  onMount(() => {
+    const unsubFolders = workspaceFolders.subscribe((val) => {
+      foldersList = val || [];
+      if (foldersList.length > 0 && (!activeFolder || !foldersList.includes(activeFolder))) {
+        activeFolder = foldersList[0];
+      }
+    });
+
+    const unsubDir = currentDir.subscribe((val) => {
+      if (val && foldersList.includes(val)) {
+        activeFolder = val;
+      }
+    });
+
+    return () => {
+      unsubFolders();
+      unsubDir();
+    };
+  });
 
   function kindIcon(kind: string): string {
     const map: Record<string, string> = {
@@ -189,6 +212,18 @@
         {#if !workspaceDir}
           <div class="ws-empty">Open a project folder</div>
         {:else}
+          {#if foldersList.length > 1}
+            <div class="ws-folder-select-row">
+              <span class="ws-select-label">Active Target:</span>
+              <select class="ws-folder-select" bind:value={activeFolder} onchange={loadWorkspaceData}>
+                {#each foldersList as folder}
+                  <option value={folder}>
+                    {folder.includes("\\") ? folder.split("\\").pop() : folder.split("/").pop()}
+                  </option>
+                {/each}
+              </select>
+            </div>
+          {/if}
           <div class="ws-tools">
             <button class="ws-btn ws-btn-idx" onclick={indexWorkspace} disabled={isIndexingGraph}>
               {isIndexingGraph ? '⏳ Indexing...' : 'Index'}
@@ -273,7 +308,7 @@
       <span class="ic" class:ic-r={diagSectionOpen}><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></span>
     </button>
     {#if diagSectionOpen}
-      <div class="intel-body"><DiagnosticsPanel /></div>
+      <div class="intel-body"><DiagnosticsPanel workspaceDir={workspaceDir} /></div>
     {/if}
   </div>
 </div>
@@ -288,6 +323,10 @@
   .intel-body { padding:5px;display:flex;flex-direction:column;gap:5px; }
 
   .ws-empty { padding:10px;text-align:center;color:var(--text-muted);font-size:var(--fs-9); }
+  .ws-folder-select-row { display:flex;align-items:center;gap:6px;padding:2px 4px;border-bottom:1px solid var(--border-subtle);margin-bottom:2px; }
+  .ws-select-label { font-size:var(--fs-8);color:var(--text-muted);font-weight:600;text-transform:uppercase; }
+  .ws-folder-select { background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:3px;padding:1px 4px;font-size:var(--fs-8);font-family:inherit;font-weight:600;outline:none;cursor:pointer;flex:1;min-width:0; }
+  .ws-folder-select:focus { border-color:var(--accent-blue); }
   .ws-tools { display:flex;gap:4px;align-items:center; }
   .ws-btn { display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:3px;border:1px solid var(--border-subtle);background:var(--bg-primary);color:var(--text-primary);font-size:var(--fs-9);cursor:pointer;font-weight:600;white-space:nowrap; }
   .ws-btn:disabled { opacity:.4;cursor:default; }

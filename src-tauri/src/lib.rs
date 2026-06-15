@@ -144,6 +144,7 @@ pub fn run() {
             agent_orch::orch_add_agent,
             agent_orch::orch_remove_agent,
             agent_orch::orch_get_tasks,
+            agent_orch::orch_delegate,
             // Knowledge graph commands
             graph::graph_index_workspace,
             graph::graph_search,

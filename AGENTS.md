@@ -3,7 +3,7 @@
 ## Stack
 - **Frontend**: SvelteKit 5 + TypeScript + Vite 6, static adapter (SPA mode, fallback `index.html`)
 - **Backend**: Tauri 2 (Rust), crate `codlib_lib`
-- **Nama app**: NyxEdit (binary `codlib.exe`)
+- **Nama app**: NyxEdit (binary `NyxEdit.exe`)
 - **ID**: `com.lenovo.nyxedit`
 
 ## Perintah Penting
@@ -49,14 +49,15 @@
 ### Done
 - **CMMO 14 stage architecture**: Smart Routing, Tool-First Engine, Chaining, SQLite, Knowledge Graph, Project Intel, Review, Multi-Model, Multi-Agent, DAG, Self-Healing, Performance & DX, RAG Context, Cost Routing.
 - **Low RAM Optimization**: Replaced default memory allocator with `mimalloc` to mitigate fragmentation. Implemented Lazy Loading for the Stage 5 symbol graph (`SymbolGraph`) which loads on demand only when queried, and added `graph_unload_workspace` to allow unloading the graph and freeing up memory on demand.
+- **Multi-Folder Workspace Support**: Implemented workspace folder stacking (multi-root project workspaces) in the Svelte file explorer tree, configuration saving/loading to `.workspace` files (including support for VS Code `.code-workspace` configuration JSON schemas), dynamic path separator resolution, and merging file entries for AI contextual mentions.
 
 ## API Test Results
 | Provider | API Key | Model | Status |
 |---|---|---|---|
-| Cerebras | `csk-vm3kv...` | `gpt-oss-120b` | ✅ Works |
-| Mistral | `Ieor4Xt...` | `mistral-large-latest` | ✅ Works |
-| Vercel | `vck_2Cty...` | `openai/gpt-4o-mini` | ✅ Works |
-| Gemini | `AIzaSyD...` | `gemini-2.0-flash` | ✅ Key valid, free-tier quota exhausted |
+| Cerebras | `csk-REDACTED` | `gpt-oss-120b` | ✅ Works |
+| Mistral | `Ieor4Xt-REDACTED` | `mistral-large-latest` | ✅ Works |
+| Vercel | `vck-REDACTED` | `openai/gpt-4o-mini` | ✅ Works |
+| Gemini | `AIzaSyD-REDACTED` | `gemini-2.0-flash` | ✅ Key valid, free-tier quota exhausted |
 
 ## Testing
 - `cargo test` — runs 23 unit tests (no API keys needed, ~9s)
@@ -117,6 +118,12 @@
 
 ### Frontend changes
 - `src/lib/components/AIChat.svelte` — +chainSteps state, `ai:route_progress` parser, ChainProgressPanel stepper
+- `src/lib/components/FileManager.svelte` — implemented multi-root workspace explorer headers, folder-plus/save icons, "Open Workspace" empty states, dynamic path slashes, and mount reloading hooks
+- `src/lib/stores.svelte.ts` — updated `loadWorkspace` to read multi-root file entries and populate merged autocomplete indexes
+- `src/lib/components/GitStatus.svelte` — implemented folder selector dropdown to switch active Git target on multi-folder workspaces
+- `src/lib/components/SearchInFiles.svelte` — implemented parallel multi-folder file/content search and relative path rendering with folder tags
+- `src/lib/components/FileManager.svelte` & `GitStatus.svelte` — migrated store subscriptions to `onMount` and wrapped reactive effects in Svelte 5 `untrack()` to eliminate infinite rendering loops and CPU spikes
+- `src/lib/components/IntelPanel.svelte` — implemented active workspace target dropdown selector to dynamically load and index symbols for multi-folder targets
 
 ### Verification
 - `cargo check`: 0 errors

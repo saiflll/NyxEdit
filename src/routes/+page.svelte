@@ -35,6 +35,7 @@
   type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | "intel" | null;
 
   let proxyPort = $state(0);
+  let degradedCount = $state(0);
 
   let tabs = $state<Tab[]>([
     { id: "tab-term", type: "terminal", label: "Terminal" },
@@ -526,17 +527,36 @@
     };
   }
 
-  onMount(async () => {
+  async function pollSystemHealth() {
+    try {
+      const components = await invoke<any[]>("heal_get_status");
+      degradedCount = components.filter(c => c.status !== "Healthy").length;
+    } catch (e) {
+      console.warn("Failed to check health:", e);
+    }
+  }
+
+  onMount(() => {
     applyTheme(getStoredTheme());
     applyFont(getStoredFont());
     initIdle();
-    try { proxyPort = await invoke<number>("get_proxy_port"); } catch {}
+    invoke<number>("get_proxy_port")
+      .then(port => proxyPort = port)
+      .catch(() => {});
     try {
       const saved = localStorage.getItem("codlib-activity-order");
       if (saved) {
         activityViews = JSON.parse(saved);
       }
     } catch {}
+
+    // Poll health status
+    pollSystemHealth();
+    const healthInterval = setInterval(pollSystemHealth, 30000);
+
+    return () => {
+      clearInterval(healthInterval);
+    };
   });
 
   $effect(() => {
@@ -565,6 +585,7 @@
         await ensureNyxDir();
         // Notify AI backend of workspace root for agent logs
         invoke("ai_set_workspace", { root: val }).catch(() => {});
+        invoke("project_detect", { root: val }).catch(() => {});
       }
     });
     return unsub;
@@ -1307,6 +1328,11 @@
     </div>
 
     <div class="sb-right">
+      {#if degradedCount > 0}
+        <button type="button" class="sb-degraded-badge" onclick={() => { sidebarView = "files"; workspaceMode = "explorer"; activeTabId = "tab-settings"; let hasSettings = tabs.some(t => t.id === "tab-settings"); if (!hasSettings) { tabs = [...tabs, { id: "tab-settings", type: "settings", label: "Settings" }]; } }} style="background: var(--accent-red); color: white; padding: 2px 6px; border: none; border-radius: 4px; font-weight: bold; margin-right: 8px; font-size: var(--fs-9); cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" title="{degradedCount} component(s) degraded/down. Click to open Settings.">
+          ⚠️ {degradedCount} DEGRADED
+        </button>
+      {/if}
       <button class="sb-btn" class:active={showFloatingAi} onclick={() => { showFloatingAi = !showFloatingAi; if (showFloatingAi) showFloatingRunner = false; }} title="AI Chat">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 2-2 4-4 4s-4-2-4-4a4 4 0 0 1 4-4z"/><path d="M16 14h.2a4 4 0 0 1 3.8 2.8l.8 2.2H3.2l.8-2.2A4 4 0 0 1 7.8 14H8"/></svg>
       </button>
@@ -1719,5 +1745,13 @@
   }
   .hidden {
     display: none !important;
+  }
+  @keyframes pulse-red {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  }
+  .sb-degraded-badge {
+    animation: pulse-red 2s infinite;
   }
 </style>

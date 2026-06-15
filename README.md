@@ -43,7 +43,7 @@ Ensure you have the following installed on your development machine:
 
 ### Development Setup
 
-1.  **Clone the Repository** and navigate to the project directory:
+1.  **Clone the Repository** (note: the repository name is `Codlib`, but the compiled desktop app product name is **NyxEdit** and the application ID is `com.lenovo.nyxedit`) and navigate to the project directory:
     ```bash
     git clone https://github.com/saiflll/Codlib.git
     cd Codlib

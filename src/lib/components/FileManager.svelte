@@ -1,9 +1,9 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { currentDir, type FileEntry } from "../stores.svelte";
+  import { currentDir, workspaceFolders, loadWorkspace, addToast, type FileEntry } from "../stores.svelte";
   import { open, ask } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
 
   let {
     onFileOpen = (_path: string) => {},
@@ -14,30 +14,100 @@
 
   let currentPath = $state("");
   let pathInputError = $state(false);
-
-  $effect(() => {
-    const unsub = currentDir.subscribe((val) => {
-      if (val !== currentPath) {
-        currentPath = val;
-      }
-    });
-    return unsub;
-  });
+  let foldersList = $state<string[]>([]);
 
   async function pickFolder() {
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        defaultPath: currentPath,
+        defaultPath: currentPath || undefined,
       });
       if (selected && typeof selected === "string") {
         currentPath = selected;
+        loadWorkspace([selected]);
         onDirChange(currentPath);
         await loadRoot();
       }
     } catch (e) {
       console.error("Folder picker error:", e);
+    }
+  }
+
+  async function addFolderToWorkspace() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: currentPath || undefined,
+      });
+      if (selected && typeof selected === "string") {
+        if (!foldersList.includes(selected)) {
+          const newFolders = [...foldersList, selected];
+          loadWorkspace(newFolders);
+          await loadRoot();
+        }
+      }
+    } catch (e) {
+      console.error("Add folder error:", e);
+    }
+  }
+
+  async function saveWorkspace() {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const selected = await save({
+        filters: [{
+          name: "NyxEdit Workspace",
+          extensions: ["workspace"]
+        }],
+        defaultPath: "project.workspace"
+      });
+      if (selected && typeof selected === "string") {
+        const workspaceData = {
+          folders: foldersList
+        };
+        const content = JSON.stringify(workspaceData, null, 2);
+        await invoke("fs_write_file", { path: selected, content });
+        addToast("Workspace saved successfully", "success");
+      }
+    } catch (e) {
+      console.error("Save workspace error:", e);
+      addToast("Failed to save workspace", "error");
+    }
+  }
+
+  async function openWorkspaceFile() {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        filters: [{
+          name: "NyxEdit Workspace",
+          extensions: ["workspace"]
+        }]
+      });
+      if (selected && typeof selected === "string") {
+        const content = await invoke<string>("fs_read_file", { path: selected });
+        const data = JSON.parse(content);
+        if (data && Array.isArray(data.folders)) {
+          const folders = data.folders.map((f: any) => {
+            if (f && typeof f === "object" && typeof f.path === "string") {
+              return f.path;
+            }
+            return String(f);
+          });
+          loadWorkspace(folders);
+          if (folders.length > 0) {
+            currentPath = folders[0];
+          }
+          await loadRoot();
+          addToast("Workspace loaded successfully", "success");
+        }
+      }
+    } catch (e) {
+      console.error("Load workspace error:", e);
+      addToast("Failed to load workspace file", "error");
     }
   }
 
@@ -108,10 +178,10 @@
         }
       }
       // selectedPath is a file — use its parent
-      const idx = selectedPath.lastIndexOf("\\");
+      const idx = Math.max(selectedPath.lastIndexOf("\\"), selectedPath.lastIndexOf("/"));
       if (idx > 0) return selectedPath.slice(0, idx);
     }
-    return currentPath;
+    return currentPath || foldersList[0] || "";
   }
 
   type FlatEntry = { entry: FileEntry; depth: number; isLast: boolean; guides: boolean[] };
@@ -163,7 +233,28 @@
 
   async function loadRoot() {
     isLoading = true;
-    rootEntries = await loadDir(currentPath);
+    if (foldersList.length > 1) {
+      rootEntries = foldersList.map((folder) => {
+        const name = folder.includes("\\") ? folder.split("\\").pop() : folder.split("/").pop();
+        return {
+          name: name || folder,
+          path: folder,
+          is_dir: true,
+          size: 0,
+          modified: "",
+        };
+      });
+      for (const folder of foldersList) {
+        if (expandedDirs.has(folder)) {
+          const children = await loadDir(folder);
+          childCache.set(folder, children);
+        }
+      }
+    } else if (foldersList.length === 1) {
+      rootEntries = await loadDir(foldersList[0]);
+    } else {
+      rootEntries = [];
+    }
     isLoading = false;
   }
 
@@ -197,7 +288,8 @@
     const name = newFolderName.trim();
     if (!name) return;
     const target = getTargetDir();
-    const dir = target + "\\" + name;
+    const sep = target.includes("/") ? "/" : "\\";
+    const dir = target + sep + name;
     try {
       await invoke("fs_create_dir", { path: dir });
       newFolderName = "";
@@ -217,7 +309,8 @@
     const name = newFileName.trim();
     if (!name) return;
     const target = getTargetDir();
-    const filePath = target + "\\" + name;
+    const sep = target.includes("/") ? "/" : "\\";
+    const filePath = target + sep + name;
     try {
       await invoke("fs_write_file", { path: filePath, content: "" });
       newFileName = "";
@@ -301,8 +394,10 @@
   async function commitRename() {
     if (!renameTarget || !renameValue.trim()) { renameTarget = null; return; }
     const newName = renameValue.trim();
-    const parent = renameTarget.slice(0, renameTarget.lastIndexOf("\\"));
-    const newPath = parent + "\\" + newName;
+    const sep = renameTarget.includes("/") ? "/" : "\\";
+    const idx = Math.max(renameTarget.lastIndexOf("\\"), renameTarget.lastIndexOf("/"));
+    const parent = renameTarget.slice(0, idx);
+    const newPath = parent + sep + newName;
     if (newPath === renameTarget) { renameTarget = null; return; }
     try {
       await invoke("fs_rename", { from: renameTarget, to: newPath });
@@ -317,8 +412,9 @@
   async function pasteItem() {
     if (!clipboardSource) return;
     const target = getTargetDir();
-    const name = clipboardSource.split("\\").pop() || "item";
-    const dest = target + "\\" + name;
+    const sep = target.includes("/") ? "/" : "\\";
+    const name = clipboardSource.split(/[\\/]/).pop() || "item";
+    const dest = target + sep + name;
 
     if (clipboardSource === dest) {
       clipboardSource = null;
@@ -461,7 +557,18 @@
   let initialLoaded = $state(false);
   onMount(() => {
     initialLoaded = true;
-    if (currentPath) loadRoot();
+
+    const unsubDir = currentDir.subscribe((val) => {
+      if (val !== currentPath) {
+        currentPath = val;
+      }
+    });
+
+    const unsubFolders = workspaceFolders.subscribe((val) => {
+      foldersList = val || [];
+    });
+
+    if (currentPath || foldersList.length > 0) loadRoot();
 
     const unsubFileChangedPromise = listen("ai:file_changed", () => {
       refreshAll();
@@ -471,49 +578,58 @@
     });
 
     return () => {
+      unsubDir();
+      unsubFolders();
       unsubFileChangedPromise.then(unsub => unsub());
       unsubToolResultPromise.then(unsub => unsub());
     };
   });
 
   $effect(() => {
-    if (initialLoaded && currentPath) {
-      loadRoot();
-    }
+    const _path = currentPath;
+    const _len = foldersList.length;
+    untrack(() => {
+      if (initialLoaded && (_path || _len > 0)) {
+        loadRoot();
+      }
+    });
   });
 
   let lastRevealed = $state("");
   $effect(() => {
-    if (!revealPath || revealPath === lastRevealed) return;
+    const rPath = revealPath;
+    if (!rPath || rPath === lastRevealed) return;
 
-    if (!currentPath || !revealPath.startsWith(currentPath)) {
-      invoke<boolean>("fs_exists", { path: revealPath }).then((exists) => {
-        if (exists) {
-          invoke<any>("fs_stat", { path: revealPath }).then((info) => {
-            let dirToLoad = revealPath;
-            if (!info.is_dir) {
-              const lastSlash = revealPath.lastIndexOf("\\");
-              const lastSlashUnix = revealPath.lastIndexOf("/");
-              const lastSlashIndex = Math.max(lastSlash, lastSlashUnix);
-              if (lastSlashIndex > 0) {
-                dirToLoad = revealPath.slice(0, lastSlashIndex);
-                if (dirToLoad.endsWith(":")) dirToLoad += "\\";
+    untrack(() => {
+      if (!currentPath || !rPath.startsWith(currentPath)) {
+        invoke<boolean>("fs_exists", { path: rPath }).then((exists) => {
+          if (exists) {
+            invoke<any>("fs_stat", { path: rPath }).then((info) => {
+              let dirToLoad = rPath;
+              if (!info.is_dir) {
+                const lastSlash = rPath.lastIndexOf("\\");
+                const lastSlashUnix = rPath.lastIndexOf("/");
+                const lastSlashIndex = Math.max(lastSlash, lastSlashUnix);
+                if (lastSlashIndex > 0) {
+                  dirToLoad = rPath.slice(0, lastSlashIndex);
+                  if (dirToLoad.endsWith(":")) dirToLoad += "\\";
+                }
               }
-            }
-            currentPath = dirToLoad;
-            onDirChange(currentPath);
-            loadRoot().then(() => {
-              expandToPath(revealPath);
-            });
-          }).catch(() => {});
-        }
-      }).catch(() => {});
-      lastRevealed = revealPath;
-      return;
-    }
+              currentPath = dirToLoad;
+              onDirChange(currentPath);
+              loadRoot().then(() => {
+                expandToPath(rPath);
+              });
+            }).catch(() => {});
+          }
+        }).catch(() => {});
+        lastRevealed = rPath;
+        return;
+      }
 
-    expandToPath(revealPath);
-    lastRevealed = revealPath;
+      expandToPath(rPath);
+      lastRevealed = rPath;
+    });
   });
 
   function expandToPath(target: string) {
@@ -542,9 +658,29 @@
 <div class="fm" onkeydown={handleFmKeydown} tabindex="-1">
   <div class="fm-header">
     <span class="fm-title">EXPLORER</span>
-    {#if currentPath}
+    {#if foldersList.length > 0}
       <div class="fm-header-actions">
-        <span class="fm-root">{currentPath.includes("\\") ? currentPath.split("\\").pop() : currentPath.split("/").pop()}</span>
+        <span class="fm-root">
+          {#if foldersList.length === 1}
+            {foldersList[0].includes("\\") ? foldersList[0].split("\\").pop() : foldersList[0].split("/").pop()}
+          {:else}
+            Workspace ({foldersList.length})
+          {/if}
+        </span>
+        <button class="fm-btn" onclick={addFolderToWorkspace} title="Add Folder to Workspace">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <line x1="12" y1="11" x2="12" y2="17"/>
+            <line x1="9" y1="14" x2="15" y2="14"/>
+          </svg>
+        </button>
+        <button class="fm-btn" onclick={saveWorkspace} title="Save Workspace As...">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/>
+            <polyline points="7 3 7 8 15 8"/>
+          </svg>
+        </button>
         <button class="fm-btn" onclick={() => { showNewFolder = !showNewFolder; showNewFile = false; }} title="New Folder">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
@@ -558,11 +694,14 @@
     {/if}
   </div>
 
-  {#if !currentPath}
+  {#if foldersList.length === 0}
     <div class="fm-no-workspace">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:12px; color:var(--text-muted);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       <p class="fm-no-workspace-text">No folder opened in workspace</p>
-      <button class="fm-open-btn" onclick={pickFolder}>Open Folder</button>
+      <div style="display: flex; gap: 8px;">
+        <button class="fm-open-btn" onclick={pickFolder}>Open Folder</button>
+        <button class="fm-open-btn" style="background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-primary);" onclick={openWorkspaceFile}>Open Workspace</button>
+      </div>
     </div>
   {:else}
     {#if showNewFolder}

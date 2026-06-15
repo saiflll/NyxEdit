@@ -10,7 +10,11 @@
     message: string;
   };
 
-  let workspaceDir = $derived($currentDir);
+  let {
+    workspaceDir = ""
+  } = $props();
+
+  let activeDir = $derived(workspaceDir || $currentDir);
   let selectedType = $state<"rust" | "node" | "platformio" | "go">("node");
   let isChecking = $state(false);
   let status = $state<"idle" | "running" | "success" | "failed">("idle");
@@ -18,15 +22,17 @@
   let issues = $state<DiagnosticIssue[]>([]);
   let autoDetected = $state(false);
 
+  let lastCheckedDir = $state("");
   $effect(() => {
-    if (workspaceDir && !autoDetected) {
+    if (activeDir && activeDir !== lastCheckedDir) {
+      lastCheckedDir = activeDir;
       detectProjectType();
     }
   });
 
   async function detectProjectType() {
     try {
-      const info = await invoke<any>("project_detect", { root: workspaceDir });
+      const info = await invoke<any>("project_detect", { root: activeDir });
       if (info) {
         autoDetected = true;
         const fw: string = info.framework || "";
@@ -47,7 +53,7 @@
   }
 
   async function runCheck() {
-    if (!workspaceDir) {
+    if (!activeDir) {
       addToast("No workspace folder opened", "error");
       return;
     }
@@ -59,7 +65,7 @@
     try {
       const output = await invoke<string>("sys_run_diagnostics", {
         cmdType: selectedType,
-        directory: workspaceDir
+        directory: activeDir
       });
 
       rawOutput = output;
@@ -144,7 +150,7 @@
   }
 
   function handleOpenFile(file: string, line: number) {
-    const absPath = workspaceDir + "/" + file;
+    const absPath = activeDir + "/" + file;
     openFile(absPath);
     addToast(`Opened ${file.split("/").pop()} at line ${line}`, "info");
   }
@@ -166,13 +172,13 @@
         <option value="go">Go</option>
         <option value="platformio">PlatformIO</option>
       </select>
-      <button class="db db-p" onclick={runCheck} disabled={isChecking || !workspaceDir}>
+      <button class="db db-p" onclick={runCheck} disabled={isChecking || !activeDir}>
         {isChecking ? 'Checking...' : 'Run'}
       </button>
     </div>
   </div>
 
-  {#if !workspaceDir}
+  {#if !activeDir}
     <div class="diag-empty">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
       <p>No workspace opened</p>
@@ -189,7 +195,7 @@
       {:else}
         <span class="diag-badge" style="background:color-mix(in srgb,var(--accent-red)12%,transparent);color:var(--accent-red);border-color:var(--accent-red)">{issues.filter(i => i.severity === "error").length} Errors</span>
       {/if}
-      <span class="diag-dir">{workspaceDir.split(/[\\/]/).pop()}</span>
+      <span class="diag-dir">{activeDir.split(/[\\/]/).pop()}</span>
     </div>
 
     {#if isChecking}

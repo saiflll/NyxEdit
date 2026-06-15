@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { addToast } from "../stores.svelte";
+  import { addToast, workspaceFolders } from "../stores.svelte";
+  import { onMount } from "svelte";
 
   let {
     searchPath = "",
@@ -13,12 +14,21 @@
   let results = $state<{ path: string; line?: number; content?: string }[]>([]);
   let busy = $state(false);
   let status = $state("");
+  let foldersList = $state<string[]>([]);
+  let pathsToSearch = $derived(foldersList.length > 0 ? foldersList : (searchPath ? [searchPath] : []));
+
+  onMount(() => {
+    const unsub = workspaceFolders.subscribe((val) => {
+      foldersList = val || [];
+    });
+    return unsub;
+  });
 
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function doSearch() {
     const q = query.trim();
-    if (!q || !searchPath) { results = []; status = ""; return; }
+    if (!q || pathsToSearch.length === 0) { results = []; status = ""; return; }
 
     busy = true;
     status = "Searching...";
@@ -26,13 +36,23 @@
 
     try {
       if (mode === "filename") {
-        const files = await invoke<{ name: string; path: string; is_dir: boolean; size: number; modified: string }[]>("fs_search_files", { path: searchPath, query: q });
-        results = files.map((f) => ({ path: f.path, content: f.name }));
-        status = files.length > 0 ? `${files.length} file(s) found` : "No matches";
+        const promises = pathsToSearch.map(path =>
+          invoke<{ name: string; path: string; is_dir: boolean; size: number; modified: string }[]>("fs_search_files", { path, query: q })
+            .catch(() => [])
+        );
+        const allResults = await Promise.all(promises);
+        const merged = allResults.flat();
+        results = merged.map((f) => ({ path: f.path, content: f.name }));
+        status = merged.length > 0 ? `${merged.length} file(s) found` : "No matches";
       } else {
-        const matches = await invoke<{ path: string; line: number; content: string }[]>("fs_search_contents", { path: searchPath, query: q, maxResults: 200 });
-        results = matches.map((m) => ({ path: m.path, line: m.line, content: m.content }));
-        status = matches.length > 0 ? `${matches.length} match(es) found` : "No matches";
+        const promises = pathsToSearch.map(path =>
+          invoke<{ path: string; line: number; content: string }[]>("fs_search_contents", { path, query: q, maxResults: 200 })
+            .catch(() => [])
+        );
+        const allResults = await Promise.all(promises);
+        const merged = allResults.flat();
+        results = merged.map((m) => ({ path: m.path, line: m.line, content: m.content }));
+        status = merged.length > 0 ? `${merged.length} match(es) found` : "No matches";
       }
     } catch (e: any) {
       status = `Error: ${e}`;
@@ -51,10 +71,15 @@
   }
 
   function resultPath(item: { path: string; line?: number }): string {
-    if (!searchPath) return item.path;
-    if (item.path.startsWith(searchPath)) {
-      const rel = item.path.slice(searchPath.length).replace(/^[\\/]+/, "");
-      return rel;
+    for (const folder of pathsToSearch) {
+      if (item.path.startsWith(folder)) {
+        const rel = item.path.slice(folder.length).replace(/^[\\/]+/, "");
+        if (foldersList.length > 1) {
+          const folderName = folder.includes("\\") ? folder.split("\\").pop() : folder.split("/").pop();
+          return `[${folderName}] ${rel}`;
+        }
+        return rel;
+      }
     }
     return item.path;
   }

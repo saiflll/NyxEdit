@@ -1,9 +1,12 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { ask } from "@tauri-apps/plugin-dialog";
-  import { currentDir, agents } from "../stores.svelte";
+  import { currentDir, workspaceFolders, agents } from "../stores.svelte";
+  import { onMount } from "svelte";
 
-  let workspacePath = $state("");
+  let foldersList = $state<string[]>([]);
+  let activeFolder = $state("");
+  let workspacePath = $derived(activeFolder);
   let branchName = $state("detached");
   let untracked = $state<string[]>([]);
   let modified = $state<string[]>([]);
@@ -24,15 +27,32 @@
 
   let isGitRepo = $derived(branchName !== "no git repo");
 
-  $effect(() => {
-    const unsub = currentDir.subscribe((val) => {
-      workspacePath = val;
-      if (val) {
-        if (gitRefreshTimer) clearTimeout(gitRefreshTimer);
-        gitRefreshTimer = setTimeout(() => refreshStatus(), 300);
+  onMount(() => {
+    const unsubFolders = workspaceFolders.subscribe((val) => {
+      foldersList = val || [];
+      if (foldersList.length > 0 && (!activeFolder || !foldersList.includes(activeFolder))) {
+        activeFolder = foldersList[0];
       }
     });
-    return () => { if (gitRefreshTimer) clearTimeout(gitRefreshTimer); unsub(); };
+
+    const unsubDir = currentDir.subscribe((val) => {
+      if (val && foldersList.includes(val)) {
+        activeFolder = val;
+      }
+    });
+
+    return () => {
+      unsubFolders();
+      unsubDir();
+    };
+  });
+
+  $effect(() => {
+    if (activeFolder) {
+      if (gitRefreshTimer) clearTimeout(gitRefreshTimer);
+      gitRefreshTimer = setTimeout(() => refreshStatus(), 300);
+    }
+    return () => { if (gitRefreshTimer) clearTimeout(gitRefreshTimer); };
   });
 
   async function refreshStatus() {
@@ -250,14 +270,25 @@
 
 <div class="git-status">
   <div class="git-header">
-    <div class="git-branch-info">
-      <svg class="branch-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="6" y1="3" x2="6" y2="15"></line>
-        <circle cx="18" cy="6" r="3"></circle>
-        <circle cx="6" cy="18" r="3"></circle>
-        <path d="M18 9a9 9 0 0 1-9 9"></path>
-      </svg>
-      <span class="branch-name" title="Active Branch">{branchName}</span>
+    <div class="git-branch-info" style="display: flex; flex-direction: column; align-items: flex-start; gap: 4px;">
+      {#if foldersList.length > 1}
+        <select class="git-folder-select" bind:value={activeFolder} onchange={refreshStatus}>
+          {#each foldersList as folder}
+            <option value={folder}>
+              {folder.includes("\\") ? folder.split("\\").pop() : folder.split("/").pop()}
+            </option>
+          {/each}
+        </select>
+      {/if}
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <svg class="branch-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="6" y1="3" x2="6" y2="15"></line>
+          <circle cx="18" cy="6" r="3"></circle>
+          <circle cx="6" cy="18" r="3"></circle>
+          <path d="M18 9a9 9 0 0 1-9 9"></path>
+        </svg>
+        <span class="branch-name" title="Active Branch">{branchName}</span>
+      </div>
     </div>
     <div class="git-header-actions">
       {#if isGitRepo}
@@ -456,6 +487,22 @@
   .git-status {
     display:flex; flex-direction:column; height:100%; background:transparent;
     color:var(--text-primary); font-size:var(--font-size); overflow:hidden;
+  }
+  .git-folder-select {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: var(--fs-10);
+    font-family: inherit;
+    font-weight: 600;
+    outline: none;
+    cursor: pointer;
+    max-width: 150px;
+  }
+  .git-folder-select:focus {
+    border-color: var(--accent-blue);
   }
   .git-header {
     display:flex; justify-content:space-between; align-items:center;
