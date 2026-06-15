@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent, agents as globalAgents, addToast, openFile } from "../stores.svelte";
   import { getIdleState } from "$lib/idle.svelte";
   import { get } from "svelte/store";
@@ -691,7 +692,12 @@
   }
 
   function markedParse(content: string): string {
-    try { return marked.parse(content) as string; } catch { return content; }
+    try {
+      const html = marked.parse(content) as string;
+      return DOMPurify.sanitize(html);
+    } catch {
+      return DOMPurify.sanitize(content);
+    }
   }
   export function clearChat() { messages = []; currentSessionId = null; }
 

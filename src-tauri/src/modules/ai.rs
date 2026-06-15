@@ -335,6 +335,11 @@ impl AiManager {
         *wr = root.to_string();
     }
 
+    /// Get the current workspace root
+    pub fn get_workspace_root(&self) -> String {
+        self.workspace_root.lock().unwrap().clone()
+    }
+
     /// Write a line to the agent log file at .nyx/logs/agent-{id}.log
     pub fn write_agent_log(&self, agent_id: &str, agent_name: &str, line: &str) {
         let workspace_root = self.workspace_root.lock().unwrap().clone();

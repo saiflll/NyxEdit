@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FileEntry {
@@ -9,6 +9,36 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub size: u64,
     pub modified: String,
+}
+
+/// Validates that the requested path is within the workspace root.
+/// If workspace_root is empty, allows any path (backward compatibility).
+pub fn validate_path_in_workspace(path: &str, workspace_root: &str) -> Result<(), String> {
+    if workspace_root.is_empty() {
+        // No workspace set, allow any path for backward compatibility
+        return Ok(());
+    }
+    
+    let requested = PathBuf::from(path);
+    let workspace = PathBuf::from(workspace_root);
+    
+    // Canonicalize paths to resolve symlinks and .. references
+    let requested_canonical = requested
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+    let workspace_canonical = workspace
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve workspace: {}", e))?;
+    
+    // Check if requested path is within workspace
+    if !requested_canonical.starts_with(&workspace_canonical) {
+        return Err(format!(
+            "Access denied: path {} is outside workspace {}",
+            path, workspace_root
+        ));
+    }
+    
+    Ok(())
 }
 
 #[allow(dead_code)]

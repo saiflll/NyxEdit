@@ -4,6 +4,8 @@ pub mod git;
 pub mod remote;
 pub mod system;
 
+use crate::modules::ai::AiManager;
+
 // Re-export type definitions
 pub use local::FileEntry;
 pub use search::SearchMatch;
@@ -17,52 +19,75 @@ pub fn get_initial_cwd() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn fs_list_dir(path: String) -> Result<Vec<FileEntry>, String> {
+pub fn fs_list_dir(state: tauri::State<'_, AiManager>, path: String) -> Result<Vec<FileEntry>, String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_list_dir(path)
 }
 
 #[tauri::command]
-pub fn fs_read_file(path: String) -> Result<String, String> {
+pub fn fs_read_file(state: tauri::State<'_, AiManager>, path: String) -> Result<String, String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_read_file(path)
 }
 
 #[tauri::command]
-pub fn fs_write_file(path: String, content: String) -> Result<(), String> {
+pub fn fs_write_file(state: tauri::State<'_, AiManager>, path: String, content: String) -> Result<(), String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_write_file(path, content)
 }
 
 #[tauri::command]
-pub fn fs_create_dir(path: String) -> Result<(), String> {
+pub fn fs_create_dir(state: tauri::State<'_, AiManager>, path: String) -> Result<(), String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_create_dir(path)
 }
 
 #[tauri::command]
-pub fn fs_delete(path: String) -> Result<(), String> {
+pub fn fs_delete(state: tauri::State<'_, AiManager>, path: String) -> Result<(), String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_delete(path)
 }
 
 #[tauri::command]
-pub fn fs_rename(from: String, to: String) -> Result<(), String> {
+pub fn fs_rename(state: tauri::State<'_, AiManager>, from: String, to: String) -> Result<(), String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&from, &workspace_root)?;
+    local::validate_path_in_workspace(&to, &workspace_root)?;
     local::fs_rename(from, to)
 }
 
 #[tauri::command]
-pub fn fs_exists(path: String) -> bool {
+pub fn fs_exists(state: tauri::State<'_, AiManager>, path: String) -> bool {
+    let workspace_root = state.get_workspace_root();
+    if let Err(_) = local::validate_path_in_workspace(&path, &workspace_root) {
+        return false;
+    }
     local::fs_exists(path)
 }
 
 #[tauri::command]
-pub fn fs_stat(path: String) -> Result<FileEntry, String> {
+pub fn fs_stat(state: tauri::State<'_, AiManager>, path: String) -> Result<FileEntry, String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     local::fs_stat(path)
 }
 
 #[tauri::command]
-pub fn fs_search_files(path: String, query: String) -> Result<Vec<FileEntry>, String> {
+pub fn fs_search_files(state: tauri::State<'_, AiManager>, path: String, query: String) -> Result<Vec<FileEntry>, String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     search::fs_search_files(path, query)
 }
 
 #[tauri::command]
-pub fn fs_search_contents(path: String, query: String, max_results: Option<usize>) -> Result<Vec<SearchMatch>, String> {
+pub fn fs_search_contents(state: tauri::State<'_, AiManager>, path: String, query: String, max_results: Option<usize>) -> Result<Vec<SearchMatch>, String> {
+    let workspace_root = state.get_workspace_root();
+    local::validate_path_in_workspace(&path, &workspace_root)?;
     search::fs_search_contents(path, query, max_results)
 }
 
