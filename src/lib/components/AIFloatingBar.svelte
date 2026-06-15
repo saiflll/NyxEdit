@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { agents, aiSendRequest, fileEntries } from "../stores.svelte";
 
   let input = $state("");
   let attachedFiles = $state<string[]>([]);
   let selectedAgentId = $state("auto");
   let agentList = $state<{ id: string; label: string }[]>([]);
+  let isDragging = $state(false);
 
   // Workspace files for '@' mentions autocomplete
   let allFiles = $state<any[]>([]);
@@ -29,6 +31,46 @@
       allFiles = entries || [];
     });
     return unsubscribe;
+  });
+
+  $effect(() => {
+    let active = true;
+    let unlistenFns: UnlistenFn[] = [];
+
+    async function setup() {
+      const enter = await listen("tauri://drag-enter", () => {
+        if (active) isDragging = true;
+      });
+      unlistenFns.push(enter);
+
+      const leave = await listen("tauri://drag-leave", () => {
+        if (active) isDragging = false;
+      });
+      unlistenFns.push(leave);
+
+      const drop = await listen("tauri://drag-drop", (event: any) => {
+        if (active) {
+          isDragging = false;
+          if (event.payload && event.payload.paths) {
+            for (const path of event.payload.paths) {
+              if (path && !attachedFiles.includes(path)) {
+                attachedFiles = [...attachedFiles, path];
+              }
+            }
+          }
+        }
+      });
+      unlistenFns.push(drop);
+    }
+
+    setup();
+
+    return () => {
+      active = false;
+      for (const fn of unlistenFns) {
+        fn();
+      }
+    };
   });
 
   let filteredFiles = $derived(
@@ -121,13 +163,62 @@
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
+    isDragging = true;
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    isDragging = false;
   }
 
   function handleDrop(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
+    isDragging = false;
     if (e.dataTransfer && e.dataTransfer.files) {
       const filesList = Array.from(e.dataTransfer.files);
+      for (const file of filesList) {
+        const path = (file as any).path || file.name;
+        if (path && !attachedFiles.includes(path)) {
+          attachedFiles = [...attachedFiles, path];
+        }
+      }
+    }
+  }
+
+  async function handlePaste(e: ClipboardEvent) {
+    if (!e.clipboardData) return;
+
+    // Check for images in clipboard (e.g. screenshots or copied browser images)
+    const items = Array.from(e.clipboardData.items);
+    let hasImage = false;
+    for (const item of items) {
+      if (item.type.indexOf("image") !== -1) {
+        hasImage = true;
+        const blob = item.getAsFile();
+        if (blob) {
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const dataUrl = event.target?.result as string;
+            if (dataUrl && !attachedFiles.includes(dataUrl)) {
+              attachedFiles = [...attachedFiles, dataUrl];
+            }
+          };
+          reader.readAsDataURL(blob);
+        }
+      }
+    }
+
+    if (hasImage) {
+      e.preventDefault();
+      return;
+    }
+
+    // Fallback to normal files
+    const filesList = Array.from(e.clipboardData.files);
+    if (filesList.length > 0) {
+      e.preventDefault();
       for (const file of filesList) {
         const path = (file as any).path || file.name;
         if (path && !attachedFiles.includes(path)) {
@@ -140,9 +231,25 @@
 
 <div 
   class="ai-floating-bar-wrapper"
+  class:is-dragging={isDragging}
   ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
   ondrop={handleDrop}
+  role="region"
+  aria-label="File drop zone"
 >
+  {#if isDragging}
+    <div class="drag-overlay">
+      <div class="drag-overlay-content">
+        <svg class="drag-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <span>Drop files to attach to chat context</span>
+      </div>
+    </div>
+  {/if}
   <!-- Autocomplete drop-down above the input bar -->
   {#if showMentionDropdown && filteredFiles.length > 0}
     <div class="mention-dropdown">
@@ -195,6 +302,7 @@
         value={input}
         oninput={handleInput}
         onkeydown={handleKeydown}
+        onpaste={handlePaste}
         placeholder="Ask AI anything... (Type @ to attach files)"
         rows={1}
         class="bar-textarea"
@@ -441,5 +549,63 @@
     text-overflow: ellipsis;
     flex: 1;
     margin-left: 8px;
+  }
+
+  /* Drag & Drop Overlay Visual Effects */
+  .ai-floating-bar-wrapper.is-dragging .ai-floating-bar {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.02);
+    border-color: var(--accent-blue);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  }
+
+  .drag-overlay {
+    position: absolute;
+    inset: -6px;
+    background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+    border: 2px dashed var(--accent-blue);
+    border-radius: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1010;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    animation: fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+  }
+
+  .drag-overlay-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--accent-blue);
+    font-size: var(--fs-11);
+    font-weight: 600;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .drag-icon {
+    animation: bounceUpDown 1s infinite alternate ease-in-out;
+  }
+
+  @keyframes fadeInScale {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes bounceUpDown {
+    from {
+      transform: translateY(-3px);
+    }
+    to {
+      transform: translateY(3px);
+    }
   }
 </style>

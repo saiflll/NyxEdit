@@ -36,6 +36,7 @@ pub fn sys_run_diagnostics(cmd_type: String, directory: String) -> Result<String
         "rust" | "cargo" | "cargo-check" => "cargo check",
         "node" | "npm" | "npm-check" => "npm run check",
         "platformio" | "pio" => "pio run",
+        "go" | "golang" | "go-build" => "go build ./...",
         _ => return Err(format!("Unknown diagnostics command type: {}", cmd_type)),
     };
 

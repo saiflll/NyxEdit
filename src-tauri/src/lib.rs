@@ -1,5 +1,8 @@
 mod modules;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::sync::{Arc, Mutex};
 use modules::{agent_orch, ai, cost_routing, db, fs, graph, pio, project_intel, provider_stats, proxy, pty, review, secrets, self_heal, sessions, ssh};
 use tauri::Manager;
@@ -155,6 +158,7 @@ pub fn run() {
             graph::graph_unwatch,
             graph::graph_stats,
             graph::graph_load_workspace,
+            graph::graph_unload_workspace,
             // Cost Routing commands
             cost_routing::cost_get_summary,
             cost_routing::cost_set_budget,

@@ -22,20 +22,30 @@ impl GraphState {
 
     pub fn try_load_workspace(&self, root: &str) -> Result<bool, String> {
         let path = self.nyx_path(root);
-        if path.exists() {
-            match SymbolGraph::load_from(&path) {
-                Ok(g) => {
-                    let count = g.nodes.len();
-                    *self.graph.lock().map_err(|e| format!("Lock: {}", e))? = g;
-                    *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
-                    Ok(true)
+        *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
+        Ok(path.exists())
+    }
+
+    pub fn ensure_loaded(&self) -> Result<(), String> {
+        let mut g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
+        if g.nodes.is_empty() {
+            let root_lock = self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))?;
+            if let Some(ref root) = *root_lock {
+                let path = self.nyx_path(root);
+                if path.exists() {
+                    if let Ok(loaded_g) = SymbolGraph::load_from(&path) {
+                        *g = loaded_g;
+                    }
                 }
-                Err(e) => Err(format!("Failed to load graph: {}", e))
             }
-        } else {
-            *self.workspace_root.lock().map_err(|e| format!("Lock: {}", e))? = Some(root.to_string());
-            Ok(false)
         }
+        Ok(())
+    }
+
+    pub fn unload_workspace(&self) -> Result<(), String> {
+        let mut g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
+        g.clear();
+        Ok(())
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -110,26 +120,31 @@ impl GraphState {
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.search(query).into_iter().cloned().collect())
     }
 
     pub fn find_by_file(&self, path: &str) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.find_by_file(path).into_iter().cloned().collect())
     }
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.find_by_name(name).into_iter().cloned().collect())
     }
 
     pub fn definitions(&self, name: &str) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.definitions(name).into_iter().cloned().collect())
     }
 
     pub fn references(&self, id: &str) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         let ref_ids: Vec<String> = g.references(id).into_iter().map(|s| s.to_string()).collect();
         let mut nodes = Vec::new();
@@ -142,6 +157,7 @@ impl GraphState {
     }
 
     pub fn outgoing_edges(&self, id: &str) -> Result<Vec<(SymbolNode, EdgeKind)>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         let edges = g.outgoing(id);
         let mut result = Vec::new();
@@ -154,16 +170,19 @@ impl GraphState {
     }
 
     pub fn traverse(&self, start_id: &str, max_depth: usize) -> Result<Vec<SymbolNode>, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.traverse(start_id, max_depth).into_iter().cloned().collect())
     }
 
     pub fn subgraph(&self, center_id: &str, max_hops: usize) -> Result<SymbolGraph, String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok(g.subgraph(center_id, max_hops))
     }
 
     pub fn stats(&self) -> Result<(usize, usize), String> {
+        self.ensure_loaded()?;
         let g = self.graph.lock().map_err(|e| format!("Lock error: {}", e))?;
         Ok((g.nodes.len(), g.edges.len()))
     }
@@ -174,6 +193,8 @@ impl GraphState {
         use notify::{Config, EventKind, RecursiveMode, Watcher};
         use std::path::Path;
         use std::sync::mpsc;
+
+        self.ensure_loaded()?;
 
         let root_path = Path::new(root);
         if !root_path.is_dir() {
@@ -190,6 +211,7 @@ impl GraphState {
 
         let graph = self.graph.clone();
         let root_owned = root.to_string();
+        let self_clone = self.clone();
 
         std::thread::spawn(move || {
             for event in rx {
@@ -206,6 +228,8 @@ impl GraphState {
                         _ => false,
                     };
                     if !should_reindex { continue; }
+
+                    let _ = self_clone.ensure_loaded();
 
                     if let Ok(mut g) = graph.lock() {
                         for path in &event.paths {
@@ -359,4 +383,11 @@ pub fn graph_load_workspace(
     root: String,
 ) -> Result<bool, String> {
     state.try_load_workspace(&root)
+}
+
+#[tauri::command]
+pub fn graph_unload_workspace(
+    state: tauri::State<'_, GraphState>,
+) -> Result<(), String> {
+    state.unload_workspace()
 }

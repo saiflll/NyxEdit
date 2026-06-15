@@ -11,7 +11,7 @@
   };
 
   let workspaceDir = $derived($currentDir);
-  let selectedType = $state<"rust" | "node" | "platformio">("node");
+  let selectedType = $state<"rust" | "node" | "platformio" | "go">("node");
   let isChecking = $state(false);
   let status = $state<"idle" | "running" | "success" | "failed">("idle");
   let rawOutput = $state("");
@@ -35,6 +35,8 @@
           selectedType = "platformio";
         } else if (lang.toLowerCase().includes("rust")) {
           selectedType = "rust";
+        } else if (lang.toLowerCase().includes("go") || fw === "GoMod") {
+          selectedType = "go";
         } else {
           selectedType = "node";
         }
@@ -114,6 +116,28 @@
         const m = line.match(/^([a-zA-Z0-9_\-\.\/\\ ]+):(\d+):(\d+):\s*(error|warning|note):\s*(.+)/);
         if (m) parsed.push({ file: m[1].trim(), line: parseInt(m[2]), column: parseInt(m[3]), severity: m[4] === "note" ? "info" : (m[4].toLowerCase() as any), message: m[5].trim() });
       }
+    } else if (selectedType === "go") {
+      for (const line of lines) {
+        const m = line.match(/^([^\s:\n]+\.go):(\d+):(\d+):\s*(.+)/);
+        const m2 = line.match(/^([^\s:\n]+\.go):(\d+):\s*(.+)/);
+        if (m) {
+          parsed.push({
+            file: m[1].replace(/^\.[\\/]/, "").trim(),
+            line: parseInt(m[2]),
+            column: parseInt(m[3]),
+            severity: "error",
+            message: m[4].trim()
+          });
+        } else if (m2) {
+          parsed.push({
+            file: m2[1].replace(/^\.[\\/]/, "").trim(),
+            line: parseInt(m2[2]),
+            column: 0,
+            severity: "error",
+            message: m2[3].trim()
+          });
+        }
+      }
     }
 
     issues = parsed.filter(item => !item.file.includes("node_modules") && !item.file.includes("target/"));
@@ -139,6 +163,7 @@
       <select bind:value={selectedType}>
         <option value="node">Node.js</option>
         <option value="rust">Rust</option>
+        <option value="go">Go</option>
         <option value="platformio">PlatformIO</option>
       </select>
       <button class="db db-p" onclick={runCheck} disabled={isChecking || !workspaceDir}>

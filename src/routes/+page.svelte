@@ -63,18 +63,22 @@
   let activityViews = $state<("files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | "intel")[]>([
     "files",
     "search",
-    "ssh",
+    "intel",
+    "platformio",
+    "database",
     "postman",
     "mqtt",
-    "platformio",
-    "extensions",
-    "database",
-    "intel"
+    "ssh",
+    "extensions"
   ]);
   let dragIconIndex = $state<number | null>(null);
 
-  function handleIconDragStart(index: number) {
+  function handleIconDragStart(e: DragEvent, index: number) {
     dragIconIndex = index;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", index.toString());
+    }
   }
   function handleIconDrop(index: number) {
     if (dragIconIndex === null || dragIconIndex === index) return;
@@ -986,7 +990,7 @@
             onclick={() => toggleSidebar(view as SidebarView)}
             title={SIDEBAR_LABELS[view]}
             draggable="true"
-            ondragstart={() => handleIconDragStart(i)}
+            ondragstart={(e) => handleIconDragStart(e, i)}
             ondragover={handleIconDragOver}
             ondrop={() => handleIconDrop(i)}
             style="cursor: grab;"

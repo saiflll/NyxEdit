@@ -138,6 +138,29 @@ impl ModelRegistry {
 
     /// Select the best model based on reasoning tier, specialization, and context size requirements
     pub fn select_model(&self, tier: ReasoningTier, spec: Spec, context_size: u32) -> Option<&ModelMetadata> {
+        // Try exact match first
+        if let Some(m) = self.find_model_for_tier(tier, spec, context_size) {
+            return Some(m);
+        }
+
+        // Fallback: search other tiers in order of preference
+        let search_order = match tier {
+            ReasoningTier::UltraHigh => vec![ReasoningTier::High, ReasoningTier::Medium, ReasoningTier::Low],
+            ReasoningTier::High => vec![ReasoningTier::UltraHigh, ReasoningTier::Medium, ReasoningTier::Low],
+            ReasoningTier::Medium => vec![ReasoningTier::High, ReasoningTier::UltraHigh, ReasoningTier::Low],
+            ReasoningTier::Low => vec![ReasoningTier::Medium, ReasoningTier::High, ReasoningTier::UltraHigh],
+        };
+
+        for fallback_tier in search_order {
+            if let Some(m) = self.find_model_for_tier(fallback_tier, spec, context_size) {
+                return Some(m);
+            }
+        }
+
+        None
+    }
+
+    fn find_model_for_tier(&self, tier: ReasoningTier, spec: Spec, context_size: u32) -> Option<&ModelMetadata> {
         self.models.iter()
             .filter(|m| m.reasoning_tier == tier && m.specialization.contains(&spec) && m.context_window_limit >= context_size)
             .min_by(|a, b| {

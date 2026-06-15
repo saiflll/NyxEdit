@@ -155,8 +155,9 @@ impl RoutingEngine {
     pub fn route_request(&self, text: &str) -> RouteDecision {
         let token_count = Self::count_tokens(text);
         let context_size = Self::classify_context_size(token_count);
-        let intent = Self::classify_intent(text);
-        let output_type = Self::classify_output_type(text, &intent);
+        let cleaned_text = strip_injected_context(text);
+        let intent = Self::classify_intent(&cleaned_text);
+        let output_type = Self::classify_output_type(&cleaned_text, &intent);
 
         // Step 1: Tool-first routing
         let mut tool_route = None;
@@ -242,5 +243,86 @@ impl RoutingEngine {
         }
 
         decision
+    }
+}
+
+pub fn strip_injected_context(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+
+    // State-based skipping of blocks at the start
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.starts_with("[Global Custom Instructions]") {
+            i += 1;
+            while i < lines.len() {
+                let next_line = lines[i].trim();
+                if next_line.starts_with("[Agent Skills Toggles]") || next_line.starts_with("[Active Editor Context - File:") {
+                    break;
+                }
+                i += 1;
+            }
+        } else if line.starts_with("[Agent Skills Toggles]") {
+            i += 1;
+            while i < lines.len() {
+                let next_line = lines[i].trim();
+                if next_line.starts_with("[Active Editor Context - File:") {
+                    break;
+                }
+                if next_line.is_empty() {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else if line.starts_with("[Active Editor Context - File:") {
+            i += 1;
+            let mut in_code = false;
+            while i < lines.len() {
+                let next_line = lines[i].trim();
+                if next_line.starts_with("```") {
+                    if in_code {
+                        i += 1;
+                        while i < lines.len() && lines[i].trim().is_empty() {
+                            i += 1;
+                        }
+                        break;
+                    } else {
+                        in_code = true;
+                    }
+                }
+                i += 1;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Collect prompt lines until the attached files section
+    let mut prompt_lines = Vec::new();
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim() == "---" && i + 1 < lines.len() {
+            let next = lines[i + 1].trim();
+            if next.starts_with("[Attached File:") || next.starts_with("[Attached File Reference:") {
+                break;
+            }
+        }
+        prompt_lines.push(line);
+        i += 1;
+    }
+
+    prompt_lines.join("\n").trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_injected_context() {
+        let input = "[Global Custom Instructions]\nAlways answer in Indonesian\n\n[Agent Skills Toggles]\n- Reading Files: ENABLED\n- Writing/Editing Files: DISABLED (Do not use write_file, edit. Inform user if requested)\n- Terminal Command Execution: DISABLED (Do not use bash_run. Inform user if requested)\n\n[Active Editor Context - File: c:\\foo.js]\n```\nconst x = 1;\n```\n\nhayy\n\n---\n[Attached File: bar.js]\nconsole.log(1);\n---";
+        let cleaned = strip_injected_context(input);
+        assert_eq!(cleaned, "hayy");
     }
 }

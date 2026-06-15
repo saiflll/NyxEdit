@@ -41,13 +41,14 @@
 - Gunakan `adapter-static` -> jangan pakai server-side rendering
 - `npm run check` **sebelum** commit untuk cek error Svelte/TypeScript
 - Rust tests: `cd src-tauri && cargo test`
-  - 19 unit tests (tool execution, model price, system prompt resolution — plus DAG, context, cost routing)
+  - 23 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing)
   - 5 API tests (`#[ignore]` — run with `cargo test -- --ignored`, needs env vars)
 - `env_logger::init()` di `run()` — log Rust via env var `RUST_LOG`
 
 ## Progress
 ### Done
 - **CMMO 14 stage architecture**: Smart Routing, Tool-First Engine, Chaining, SQLite, Knowledge Graph, Project Intel, Review, Multi-Model, Multi-Agent, DAG, Self-Healing, Performance & DX, RAG Context, Cost Routing.
+- **Low RAM Optimization**: Replaced default memory allocator with `mimalloc` to mitigate fragmentation. Implemented Lazy Loading for the Stage 5 symbol graph (`SymbolGraph`) which loads on demand only when queried, and added `graph_unload_workspace` to allow unloading the graph and freeing up memory on demand.
 
 ## API Test Results
 | Provider | API Key | Model | Status |
@@ -58,8 +59,8 @@
 | Gemini | `AIzaSyD...` | `gemini-2.0-flash` | ✅ Key valid, free-tier quota exhausted |
 
 ## Testing
-- `cargo test` — runs 19 unit tests (no API keys needed, ~9s)
-  - 19 unit tests (tool execution, model price, system prompt resolution — plus DAG, context, cost routing) 
+- `cargo test` — runs 23 unit tests (no API keys needed, ~9s)
+  - 23 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing) 
 - `CEREBRAS_API_KEY=... cargo test -- --ignored` — API integration tests
 - React loop test (`test_react_loop_coder_read_file`) confirms tool-calling ReAct loop works end-to-end
 
@@ -78,18 +79,18 @@
 | **2** Tool-First Engine | ✅ `ripgrep.rs`, TreeSitter, scan cache | ❌ Tool-only route lewat stream | ✅ Ya — tool-only skip model call |
 | **3** Chaining | ✅ `chain_engine.rs`, `run_chain()` | ✅ `ChainProgressPanel.svelte` | ✅ Ya — kalau routing bikin chain plan |
 | **4** SQLite | ✅ `sessions.rs` SQLite rewrite, 4 commands | ✅ Session list/save/load | ✅ Ya — tiap chat pake database |
-| **5** Knowledge Graph | ✅ `symbol_graph.rs`, `parsers.rs`, file watcher | ❌ 11 commands registered | 🔶 Parsial — search dipakai tool-only, `graph_index_workspace` perlu trigger manual |
+| **5** Knowledge Graph | ✅ `symbol_graph.rs`, `parsers.rs`, file watcher | ❌ 12 commands registered | 🔶 Parsial — search/query lazy-loaded (hanya di-load ke RAM saat query pertama), `graph_unload_workspace` unloads RAM |
 | **6** Project Intel | ✅ `project_intel.rs`, framework detection | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `project_detect` dulu |
 | **7** Review | ✅ `review.rs`, 3 rules | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `review_text` manual |
 | **8** Multi-Model | ✅ `provider_stats.rs`, CircuitBreaker | ❌ 2 commands | ✅ Ya — circuit breaker aktif di fallback loop |
 | **9** Multi-Agent | ✅ `agent_orch.rs`, 3 sub-agents | ❌ 4 commands | 🔶 Tidak otomatis — perlu panggil `orch_delegate` |
 | **10** DAG | ✅ `DagPlan`, `run_dag()` parallel tokio | ❌ | 🔶 Routing prioritaskan DAG untuk RefactorFull/CodeReview |
 | **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ❌ 2 commands | 🔶 `report_degraded()` dipanggil di error path, frontend perlu `get_status` |
-| **12** Performance & DX | ✅ Cache warming, crash marker, startup health check | ❌ `heal_check_startup`, `heal_clear_crash_marker` | ✅ Cache warm di `ensure_loaded`, crash marker di startup |
+| **12** Performance & DX | ✅ Cache warming, crash marker, startup health check, mimalloc allocator | ❌ `heal_check_startup`, `heal_clear_crash_marker` | ✅ Cache warm di `ensure_loaded`, crash marker di startup, mimalloc global allocator |
 | **13** RAG Conversation Memory | ✅ `context.rs` — compression, cross-session retrieval | ❌ | ✅ Compression aktif di `ai_chat_stream` (OnceLock) |
 | **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ❌ 3 commands | 🔶 Routing preferensi, belum auto-dipanggil |
 
-**Kesimpulan**: Backend 100%, frontend masih banyak yang belum di-Svelte-in. Yang benar-benar aktif end-to-end: Stage 1, 2, 3, 4, 8, 12 (partial), 13 (partial). Sisanya (5, 6, 7, 9, 10, 11, 14) jalan di Rust tapi belum punya UI / trigger otomatis penuh.
+**Kesimpulan**: Backend 100%, frontend masih banyak yang belum di-Svelte-in. Yang benar-benar aktif end-to-end: Stage 1, 2, 3, 4, 8, 12, 13 (partial). Sisanya (5, 6, 7, 9, 10, 11, 14) jalan di Rust tapi belum punya UI / trigger otomatis penuh. Lazy loading symbol graph (Stage 5) and mimalloc allocator keep NyxEdit's RAM footprint low.
 
 ### Rust files added (Stage 1–14)
 - `src-tauri/models.toml` — compiled-in model definitions

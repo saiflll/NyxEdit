@@ -637,18 +637,22 @@
     if (files && files.length > 0) {
       let fileContexts = [];
       for (const file of files) {
-        try {
-          const content = await invoke<string>("fs_read_file", { path: file });
-          fileContexts.push(`\n\n---\n[Attached File: ${file}]\n${content}\n---`);
-        } catch {
-          fileContexts.push(`\n\n---\n[Attached File Reference: ${file} (Failed to read)]\n---`);
+        if (file.startsWith("data:image/")) {
+          fileContexts.push(`\n\n![Pasted Image](${file})`);
+        } else {
+          try {
+            const content = await invoke<string>("fs_read_file", { path: file });
+            fileContexts.push(`\n\n---\n[Attached File: ${file}]\n${content}\n---`);
+          } catch {
+            fileContexts.push(`\n\n---\n[Attached File Reference: ${file} (Failed to read)]\n---`);
+          }
         }
       }
       finalContent = finalContent + "\n" + fileContexts.join("\n");
     }
 
     const displayLabel = files && files.length > 0
-      ? `${promptText}\n\n📎 Attached files:\n` + files.map(f => ` - ${f.split(/[\\/]/).pop()}`).join("\n")
+      ? `${promptText}\n\n📎 Attached files:\n` + files.map(f => f.startsWith("data:image/") ? " - pasted_image.png" : ` - ${f.split(/[\\/]/).pop()}`).join("\n")
       : promptText;
     const userMsg: ChatMessage = {
       role: "user",

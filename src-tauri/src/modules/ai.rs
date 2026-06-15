@@ -7,6 +7,8 @@ use tokio::sync::oneshot;
 use tauri::{Emitter, Manager};
 use chrono::Utc;
 
+
+
 #[derive(Clone, Serialize)]
 pub struct AgentPersona {
     pub id: &'static str,
@@ -364,7 +366,86 @@ fn default_base_url(provider: &str) -> &'static str {
     match provider {
         "vercel" => "https://ai-gateway.vercel.sh/v1",
         "ollama" => "http://localhost:11434/v1",
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
         _ => "",
+    }
+}
+
+fn parse_multimodal_content(text: &str) -> serde_json::Value {
+    if !text.contains("data:image/") {
+        return serde_json::json!(text);
+    }
+
+    let mut parts = Vec::new();
+    let mut last_pos = 0;
+    
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut pos = 0;
+    
+    while pos < len {
+        if pos + 11 <= len && chars[pos..pos+11].iter().collect::<String>() == "data:image/" {
+            if pos > last_pos {
+                let mut txt_part: String = chars[last_pos..pos].iter().collect();
+                if txt_part.ends_with('(') {
+                    if let Some(bracket_start) = txt_part.rfind("![") {
+                        txt_part.truncate(bracket_start);
+                    }
+                }
+                let clean_txt = txt_part.trim();
+                if !clean_txt.is_empty() {
+                    parts.push(serde_json::json!({
+                        "type": "text",
+                        "text": clean_txt
+                    }));
+                }
+            }
+            
+            let mut end_pos = pos;
+            while end_pos < len {
+                let c = chars[end_pos];
+                if c == ')' || c.is_whitespace() || c == '"' || c == '\'' {
+                    break;
+                }
+                end_pos += 1;
+            }
+            
+            let data_url: String = chars[pos..end_pos].iter().collect();
+            let clean_url = data_url.replace(|c: char| c.is_whitespace(), "");
+            
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": clean_url
+                }
+            }));
+            
+            if end_pos < len && chars[end_pos] == ')' {
+                last_pos = end_pos + 1;
+            } else {
+                last_pos = end_pos;
+            }
+            pos = last_pos;
+        } else {
+            pos += 1;
+        }
+    }
+    
+    if last_pos < len {
+        let txt_part: String = chars[last_pos..len].iter().collect();
+        let clean_txt = txt_part.trim();
+        if !clean_txt.is_empty() {
+            parts.push(serde_json::json!({
+                "type": "text",
+                "text": clean_txt
+            }));
+        }
+    }
+    
+    if parts.is_empty() {
+        serde_json::json!(text)
+    } else {
+        serde_json::json!(parts)
     }
 }
 
@@ -382,7 +463,7 @@ fn build_request(agent: &AgentConfig, messages: &[ChatMessage]) -> Result<reqwes
     for m in messages {
         chat_messages.push(serde_json::json!({
             "role": m.role,
-            "content": m.content
+            "content": parse_multimodal_content(&m.content)
         }));
     }
 
@@ -469,7 +550,7 @@ async fn stream_openai(
         }));
     }
     for m in messages {
-        chat_messages.push(serde_json::json!({"role": m.role, "content": m.content}));
+        chat_messages.push(serde_json::json!({"role": m.role, "content": parse_multimodal_content(&m.content)}));
     }
 
     let mut body = serde_json::json!( {
@@ -495,8 +576,9 @@ async fn stream_openai(
 
     let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
+    let status = response.status();
+
+    if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
         return Err(format!("AI request failed ({}): {}", status, text));
     }
@@ -1133,7 +1215,7 @@ async fn run_react_loop(
         conversation.push(serde_json::json!({"role": "system", "content": sp}));
     }
     for m in messages {
-        conversation.push(serde_json::json!({"role": m.role, "content": m.content}));
+        conversation.push(serde_json::json!({"role": m.role, "content": parse_multimodal_content(&m.content)}));
     }
 
     let mut full_content = String::new();
@@ -1163,8 +1245,10 @@ async fn run_react_loop(
         }
 
         let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
-        if !response.status().is_success() {
-            let status = response.status();
+
+        let status = response.status();
+
+        if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
             return Err(format!("AI request failed ({}): {}", status, text));
         }
@@ -1251,6 +1335,65 @@ async fn run_react_loop(
     Ok((full_content, total_input, total_output))
 }
 
+pub fn resolve_routed_agent(
+    decision: &super::routing_engine::RouteDecision,
+    registry: &super::model_registry::ModelRegistry,
+    state: &AiManager,
+    baseline_agent: &AgentConfig,
+) -> AgentConfig {
+    let mut agent = baseline_agent.clone();
+    if let Some(ref model_id) = decision.model_route {
+        let mut resolved_model = model_id.clone();
+        if let Some(model_meta) = registry.models.iter().find(|m| m.id == *model_id) {
+            if let Some(provider_agent) = state.get_agent_for_provider(&model_meta.provider) {
+                agent.provider = provider_agent.provider;
+                agent.base_url = provider_agent.base_url;
+                agent.id = provider_agent.id.clone();
+                agent.api_key = provider_agent.api_key.clone();
+            } else if model_meta.provider != agent.provider {
+                agent.provider = model_meta.provider.clone();
+                agent.base_url = None;
+                agent.api_key = None;
+            }
+        }
+        agent.model = resolved_model;
+    } else {
+        if let Some(provider_agent) = state.get_agent_for_provider("gemini") {
+            agent.provider = provider_agent.provider;
+            agent.base_url = provider_agent.base_url;
+            agent.id = provider_agent.id.clone();
+            agent.api_key = provider_agent.api_key.clone();
+            agent.model = provider_agent.model.clone();
+        } else {
+            agent.model = "gemini-2.0-flash".to_string();
+            agent.provider = "gemini".to_string();
+            agent.base_url = None;
+            agent.api_key = None;
+        }
+    }
+    agent
+}
+
+pub fn resolve_fallback_agent(
+    next_fallback: &super::fallback_manager::FallbackEntry,
+    state: &AiManager,
+    current_agent: &AgentConfig,
+) -> AgentConfig {
+    let mut agent = current_agent.clone();
+    agent.model = next_fallback.model_id.clone();
+    agent.base_url = None;
+    agent.api_key = None;
+    if let Some(pa) = state.get_agent_for_provider(&next_fallback.provider) {
+        agent.id = pa.id;
+        agent.provider = pa.provider;
+        agent.base_url = pa.base_url;
+        agent.api_key = pa.api_key.clone();
+    } else {
+        agent.provider = next_fallback.provider.clone();
+    }
+    agent
+}
+
 #[tauri::command]
 pub async fn ai_chat_stream(
     app: tauri::AppHandle,
@@ -1276,7 +1419,12 @@ pub async fn ai_chat_stream(
 
     // Auto Mode Routing Integration
     let is_auto_mode = agent.model == "auto" || model_override.as_deref() == Some("auto");
-    let registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    let mut registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    if is_auto_mode {
+        let active_agents = state.list_agents();
+        let active_providers: Vec<String> = active_agents.iter().map(|a| a.provider.clone()).collect();
+        registry.models.retain(|m| active_providers.contains(&m.provider));
+    }
     let tools = super::tool_registry::ToolRegistry::load_default();
     let engine = super::routing_engine::RoutingEngine::new(registry.clone(), tools);
     let routing_decision = if is_auto_mode {
@@ -1291,25 +1439,7 @@ pub async fn ai_chat_stream(
     };
 
     if let Some(ref decision) = routing_decision {
-        if let Some(ref model_id) = decision.model_route {
-            if let Some(model_meta) = engine.model_registry.models.iter().find(|m| m.id == *model_id) {
-                if model_meta.provider != agent.provider {
-                    if let Some(provider_agent) = state.get_agent_for_provider(&model_meta.provider) {
-                        agent.provider = provider_agent.provider;
-                        agent.base_url = provider_agent.base_url;
-                        agent.id = provider_agent.id.clone();
-                    } else {
-                        agent.provider = model_meta.provider.clone();
-                        agent.base_url = None;
-                    }
-                }
-            }
-            agent.model = model_id.clone();
-        } else {
-            agent.model = "gemini-2.0-flash".to_string();
-            agent.provider = "gemini".to_string();
-            agent.base_url = None;
-        }
+        agent = resolve_routed_agent(decision, &engine.model_registry, &state, &agent);
     }
 
     // Build fallback manager for auto mode
@@ -1512,16 +1642,7 @@ pub async fn ai_chat_stream(
                             }
                         }
                         last_error = format!("{} (tried {})", e, agent.model);
-                        agent.model = next.model_id.clone();
-                        agent.base_url = None;
-                        agent.api_key = None;
-                        if let Some(pa) = state.get_agent_for_provider(&next.provider) {
-                            agent.id = pa.id;
-                            agent.provider = pa.provider;
-                            agent.base_url = pa.base_url;
-                        } else {
-                            agent.provider = next.provider.clone();
-                        }
+                        agent = resolve_fallback_agent(next, &state, &agent);
                         state.write_agent_log(&agent.id, &agent.name,
                             &format!("FALLBACK to model={}/{} (remaining: {})", agent.provider, agent.model, fm.remaining()));
                         let _ = app.emit("ai:route_progress",
@@ -1682,6 +1803,7 @@ const PROVIDER_ENDPOINTS: &[(&str, &str)] = &[
     ("alibaba", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
     ("xai", "https://api.x.ai/v1"),
     ("openrouter", "https://openrouter.ai/api/v1"),
+    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
 ];
 
 fn provider_endpoint(provider: &str) -> Option<&'static str> {
@@ -2168,17 +2290,22 @@ async fn run_chain(
 
         // Build step agent config
         let mut step_agent = state.get_agent(&_original_agent.id).unwrap_or_else(|| _original_agent.clone());
-        step_agent.model = if model_id.is_empty() { _original_agent.model.clone() } else { model_id.clone() };
-        step_agent.provider = if provider.is_empty() { _original_agent.provider.clone() } else { provider.clone() };
-        step_agent.base_url = None;
-        step_agent.api_key = None;
-
-        // Try to find provider-specific agent config for API key
-        if !provider.is_empty() && provider != _original_agent.provider {
+        let mut resolved = false;
+        if !provider.is_empty() {
             if let Some(pa) = state.get_agent_for_provider(&provider) {
                 step_agent.id = pa.id;
+                step_agent.provider = pa.provider;
                 step_agent.base_url = pa.base_url;
+                step_agent.api_key = pa.api_key.clone();
+                step_agent.model = pa.model.clone();
+                resolved = true;
             }
+        }
+        if !resolved {
+            step_agent.model = if model_id.is_empty() { _original_agent.model.clone() } else { model_id.clone() };
+            step_agent.provider = if provider.is_empty() { _original_agent.provider.clone() } else { provider.clone() };
+            step_agent.base_url = None;
+            step_agent.api_key = None;
         }
 
         // Resolve API key
@@ -2319,16 +2446,22 @@ async fn run_dag(
                 let provider = model_meta.as_ref().map(|m| m.provider.clone()).unwrap_or_default();
 
                 let mut step_agent = state_clone.get_agent(&agent.id).unwrap_or_else(|| agent.clone());
-                step_agent.model = if model_id.is_empty() { agent.model.clone() } else { model_id.clone() };
-                step_agent.provider = if provider.is_empty() { agent.provider.clone() } else { provider.clone() };
-                step_agent.base_url = None;
-                step_agent.api_key = None;
-
-                if !provider.is_empty() && provider != agent.provider {
+                let mut resolved = false;
+                if !provider.is_empty() {
                     if let Some(pa) = state_clone.get_agent_for_provider(&provider) {
                         step_agent.id = pa.id;
+                        step_agent.provider = pa.provider;
                         step_agent.base_url = pa.base_url;
+                        step_agent.api_key = pa.api_key.clone();
+                        step_agent.model = pa.model.clone();
+                        resolved = true;
                     }
+                }
+                if !resolved {
+                    step_agent.model = if model_id.is_empty() { agent.model.clone() } else { model_id.clone() };
+                    step_agent.provider = if provider.is_empty() { agent.provider.clone() } else { provider.clone() };
+                    step_agent.base_url = None;
+                    step_agent.api_key = None;
                 }
 
                 let secret_key = {
@@ -2686,6 +2819,166 @@ mod tests {
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"list_directory"));
         assert!(names.contains(&"bash_run"));
+    }
+
+    #[tokio::test]
+    async fn test_auto_routing_model_selection() {
+        let state = AiManager::new();
+        // Insert a configured OpenRouter agent with a custom/default model set to "auto"
+        {
+            let mut agents = state.agents.lock().unwrap();
+            agents.insert("or-agent".into(), AgentConfig {
+                id: "or-agent".into(),
+                name: "OpenRouter Agent".into(),
+                provider: "openrouter".into(),
+                model: "auto".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                api_key: Some("test-key".into()),
+                capabilities: vec![],
+                temperature: None,
+                system_prompt: None,
+                persona_id: None,
+                built_in: false,
+                cached_models: vec![],
+                models_synced_at: None,
+            });
+        }
+
+        let registry = super::super::model_registry::ModelRegistry::load_default();
+        let baseline_agent = AgentConfig {
+            id: "baseline".into(),
+            name: "Baseline".into(),
+            provider: "openrouter".into(),
+            model: "auto".into(),
+            base_url: None,
+            api_key: None,
+            capabilities: vec![],
+            temperature: None,
+            system_prompt: None,
+            persona_id: None,
+            built_in: false,
+            cached_models: vec![],
+            models_synced_at: None,
+        };
+
+        // If route request decision wants "deepseek-r1"
+        let decision = super::super::routing_engine::RouteDecision {
+            intent: super::super::routing_engine::Intent::CodeReview,
+            context_size: super::super::routing_engine::ContextSize::Small,
+            token_count: 100,
+            output_type: super::super::routing_engine::OutputType::Narrative,
+            tool_route: None,
+            model_route: Some("deepseek-r1".into()),
+            reasoning_tier: super::super::model_registry::ReasoningTier::UltraHigh,
+            reason: "test".into(),
+        };
+
+        let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);
+
+        // It should NOT overwrite the model with "auto" (from provider_agent.model)
+        // It should set the model to "deepseek-r1" and use the provider_agent's connection details!
+        assert_eq!(resolved.model, "deepseek-r1");
+        assert_eq!(resolved.provider, "openrouter");
+        assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
+        assert_eq!(resolved.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
+    }
+
+    #[tokio::test]
+    async fn test_auto_routing_fallback_model_selection() {
+        let state = AiManager::new();
+        // Insert a configured OpenRouter agent with a custom/default model set to "auto"
+        {
+            let mut agents = state.agents.lock().unwrap();
+            agents.insert("or-agent".into(), AgentConfig {
+                id: "or-agent".into(),
+                name: "OpenRouter Agent".into(),
+                provider: "openrouter".into(),
+                model: "auto".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                api_key: Some("test-key".into()),
+                capabilities: vec![],
+                temperature: None,
+                system_prompt: None,
+                persona_id: None,
+                built_in: false,
+                cached_models: vec![],
+                models_synced_at: None,
+            });
+        }
+
+        let current_agent = AgentConfig {
+            id: "baseline".into(),
+            name: "Baseline".into(),
+            provider: "openrouter".into(),
+            model: "deepseek-r1".into(),
+            base_url: None,
+            api_key: None,
+            capabilities: vec![],
+            temperature: None,
+            system_prompt: None,
+            persona_id: None,
+            built_in: false,
+            cached_models: vec![],
+            models_synced_at: None,
+        };
+
+        let fallback_entry = super::super::fallback_manager::FallbackEntry {
+            provider: "openrouter".into(),
+            model_id: "qwen/qwen-2.5-coder-32b-instruct".into(),
+            tier: super::super::model_registry::ReasoningTier::High,
+            cost_per_1k: 0.0003,
+        };
+
+        let resolved = resolve_fallback_agent(&fallback_entry, &state, &current_agent);
+
+        // It should NOT overwrite the model with "auto" (from provider_agent.model)
+        // It should set the model to "qwen/qwen-2.5-coder-32b-instruct" and use the provider_agent's connection details!
+        assert_eq!(resolved.model, "qwen/qwen-2.5-coder-32b-instruct");
+        assert_eq!(resolved.provider, "openrouter");
+        assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
+        assert_eq!(resolved.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
+    }
+
+    #[tokio::test]
+    async fn test_auto_routing_unconfigured_provider() {
+        let state = AiManager::new(); // empty, no agents configured
+
+        let registry = super::super::model_registry::ModelRegistry::load_default();
+        let baseline_agent = AgentConfig {
+            id: "baseline".into(),
+            name: "Baseline".into(),
+            provider: "openrouter".into(),
+            model: "auto".into(),
+            base_url: None,
+            api_key: None,
+            capabilities: vec![],
+            temperature: None,
+            system_prompt: None,
+            persona_id: None,
+            built_in: false,
+            cached_models: vec![],
+            models_synced_at: None,
+        };
+
+        // Route to gemini-2.0-flash (provider "gemini")
+        let decision = super::super::routing_engine::RouteDecision {
+            intent: super::super::routing_engine::Intent::ExplainSimple,
+            context_size: super::super::routing_engine::ContextSize::Small,
+            token_count: 100,
+            output_type: super::super::routing_engine::OutputType::Narrative,
+            tool_route: None,
+            model_route: Some("gemini-2.0-flash".into()),
+            reasoning_tier: super::super::model_registry::ReasoningTier::Medium,
+            reason: "test".into(),
+        };
+
+        let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);
+
+        // Should use the routed model and clear base_url / api_key as it has no provider agent
+        assert_eq!(resolved.model, "gemini-2.0-flash");
+        assert_eq!(resolved.provider, "gemini");
+        assert_eq!(resolved.api_key, None);
+        assert_eq!(resolved.base_url, None);
     }
 
     // ── API connectivity tests (set env vars, run with `cargo test -- --ignored`) ──

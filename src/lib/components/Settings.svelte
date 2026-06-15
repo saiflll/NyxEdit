@@ -4,7 +4,7 @@
   import type { Agent, AgentPersona } from "../stores.svelte";
   const PROVIDERS = [
     { id: "openai", name: "OpenAI", needsApiKey: true, defaultUrl: "https://api.openai.com/v1" },
-    { id: "gemini", name: "Gemini (Google)", needsApiKey: true, defaultUrl: "" },
+    { id: "gemini", name: "Gemini (Google)", needsApiKey: true, defaultUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
     { id: "cerebras", name: "Cerebras", needsApiKey: true, defaultUrl: "https://api.cerebras.ai/v1" },
     { id: "mistral", name: "Mistral AI", needsApiKey: true, defaultUrl: "https://api.mistral.ai/v1" },
     { id: "alibaba", name: "Alibaba (DashScope)", needsApiKey: true, defaultUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
@@ -1367,7 +1367,7 @@
   .settings-btn-save:disabled { opacity:0.4; cursor:not-allowed; }
   .settings-btn-save:hover:not(:disabled) { filter:brightness(1.15); }
 
-  .settings-form { padding:14px 16px; background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); flex-shrink:0; animation:slideDown 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+  .settings-form { padding:14px 16px; background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); flex-shrink:0; animation:slideDown 0.2s cubic-bezier(0.4, 0, 0.2, 1); max-height: calc(100vh - 180px); overflow-y: auto; }
   @keyframes slideDown { from { opacity:0; transform: translateY(-4px); } to { opacity:1; transform: translateY(0); } }
   .form-field { display:flex; flex-direction:column; gap:4px; }
   .form-field span { font-size:var(--fs-10); color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; }
