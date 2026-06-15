@@ -11,13 +11,14 @@ vite.config.ts.timestamp-*
 
 # Temporary scripts/executables
 .vscode/
+/.nyx/
+/.notepad_temp/
 /InteractiveBOM_PCB1_2026-5-25.html
-/check.go
 /img.zip
-/network_scanner.py
 /res/
 /scan.exe
 /scan.exe~
 /scan_result.txt
-/scanner.go
 /src-tauri/src/modules/contlib.code-workspace
+/docs/
+/tool/

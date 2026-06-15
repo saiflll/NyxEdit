@@ -8,26 +8,27 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - name: ubuntu-latest
+        include:
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - name: windows-latest
+          - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - name: macos-latest
+          - os: macos-latest
             target: x86_64-apple-darwin
 
-    runs-on: ${{ matrix.os.name }}
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -38,15 +39,15 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os.target }}
+          targets: ${{ matrix.target }}
 
-      - name: Cache cargo
+      - name: Cache Cargo
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
       - name: Install Linux dependencies
-        if: matrix.os.name == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -63,38 +64,13 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Tauri app
-        run: npm run tauri build
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Build and Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: contlib-${{ matrix.os.name }}
-          path: |
-            src-tauri/target/release/bundle/
-            !src-tauri/target/release/bundle/**/*.sig
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
+          tagName: ${{ github.ref_name }}
+          releaseName: "Release ${{ github.ref_name }}"
+          releaseDraft: false
           prerelease: false
-          files: |
-            contlib-ubuntu-latest/**/*
-            contlib-windows-latest/**/*
-            contlib-macos-latest/**/*
-          generate_release_notes: true
+          includeRelease: ${{ startsWith(github.ref, 'refs/tags/v') }}
