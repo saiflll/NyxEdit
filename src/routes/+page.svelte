@@ -30,6 +30,7 @@
   import { getStoredTheme, getStoredFont, applyTheme, applyFont } from "$lib/themes";
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
   import { initIdle } from "$lib/idle.svelte";
+  import { getActiveTerminalSession } from "$lib/utils/terminal";
 
   type TabType = "file" | "settings" | "setup" | "terminal" | "preview" | "ssh_session" | "private" | "api_client" | "db_query" | "diff" | "ai_chat";
   type SidebarView = "files" | "search" | "ssh" | "postman" | "mqtt" | "platformio" | "extensions" | "database" | "intel" | null;
@@ -140,6 +141,11 @@
   // ─── Primary CWD (from terminal) ──────────────
   let primaryCwd = $state("");
   let activeFilePath = $state("");
+  let autoReviewEnabled = $state(true);
+  let projectDetected = $state<string | null>(null);
+  
+  // Import auto-detect functions
+  import { autoDetectWorkspace, autoLoadIntel, autoRunReview } from "$lib/utils/workspace";
 
   // ─── App Logs ─────────────────────────────────
   let logs = $state<{ time: string; msg: string; type: string }[]>([]);
@@ -147,12 +153,19 @@
     const t = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     logs = [...logs, { time: t, msg, type }];
   }
-  // Capture console.log/error
-  const origLog = console.log;
-  const origError = console.error;
-  console.log = (...args: any[]) => { origLog(...args); addLog(args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" "), "info"); };
-  console.error = (...args: any[]) => { origError(...args); addLog(args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" "), "error"); };
-  addLog("App started");
+  
+  // Import logger dengan cleanup otomatis
+  import { createLogger } from "$lib/utils/tabHelpers";
+  
+  let cleanupConsole: (() => void) | null = null;
+  onMount(() => {
+    cleanupConsole = createLogger(addLog);
+    addLog("App started");
+    
+    return () => {
+      if (cleanupConsole) cleanupConsole();
+    };
+  });
 
   // ─── Clock ────────────────────────────────────
   let now = $state(new Date());
@@ -160,258 +173,28 @@
     const id = setInterval(() => { now = new Date(); }, 1000);
     return () => clearInterval(id);
   });
-  function fmtTime(d: Date) { return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+  import { fmtTime, log, err } from "$lib/utils/helpers";
 
   // ─── Platform IO ──────────────────────────────
-  type PioResult = { success: boolean; output: string; error: string | null };
-  type PioStatus = { installed: boolean; version: string | null; python: string | null; error?: string };
-  let pioStatus = $state<PioStatus>({ installed: false, version: null, python: null });
-  let pioBoards = $state<string[]>([]);
-  let pioBusy = $state(false);
-  let pioInstalling = $state(false);
-  let pioInitPath = $state("");
-  let pioStatusMsg = $state("");
-  let pioBoardSearch = $state("");
-  let pioBoardLimit = $state(50);
-  const MAX_PIO_BOARDS = 50;
-  let pioFilteredBoards = $derived(
-    pioBoardSearch
-      ? pioBoards.filter(b => b.toLowerCase().includes(pioBoardSearch.toLowerCase())).slice(0, MAX_PIO_BOARDS)
-      : pioBoards.slice(0, MAX_PIO_BOARDS)
-  );
-
+  import { createPioState, checkPio, installPio, initPioProject, runPioTarget, getFilteredBoards, PIO_SCRIPTS, initPioProjectWithBoard } from "$lib/utils/pio";
+  
+  let pioState = $state(createPioState());
   let hasCheckedPio = false;
-  async function checkPio(force = false) {
-    if (hasCheckedPio && !force) return;
-    try {
-      const s = await invoke<PioStatus>("pio_detect");
-      pioStatus = s;
-      hasCheckedPio = true;
-      if (s.installed) {
-        addLog(`PlatformIO detected: ${s.version}`);
-        if (pioBoards.length === 0) {
-          const boards = await invoke<string[]>("pio_list_boards", { search: null });
-          pioBoards = boards.slice(0, 20);
-        }
-      }
-    } catch (e: any) {
-      pioStatus = { installed: false, version: null, python: null, error: String(e) };
-    }
-  }
-
-  async function installPio() {
-    pioInstalling = true;
-    pioStatusMsg = "Installing PlatformIO...";
-    try {
-      const res = await invoke<PioResult>("pio_install");
-      if (res.success) {
-        pioStatusMsg = "PlatformIO installed successfully!";
-        addLog("PlatformIO installed");
-        await checkPio();
-      } else {
-        pioStatusMsg = "Installation failed";
-        console.error(res.error);
-      }
-    } catch (e: any) {
-      pioStatusMsg = "Installation error";
-      console.error(e);
-    }
-    pioInstalling = false;
-  }
-
-  async function initPioProject(board?: string) {
-    const path = pioInitPath || primaryCwd;
-    if (!path) return;
-    pioBusy = true;
-    pioStatusMsg = "Initializing project...";
-    try {
-      const res = await invoke<PioResult>("pio_init", { path, board: board || null });
-      if (res.success) {
-        pioStatusMsg = board ? `Project initialized with ${board}!` : "Project initialized!";
-        addLog(`PIO project initialized at ${path}${board ? ` (${board})` : ""}`);
-      } else {
-        pioStatusMsg = "Init failed";
-        console.error(res.error);
-      }
-    } catch (e: any) {
-      pioStatusMsg = "Init error";
-      console.error(e);
-    }
-    pioBusy = false;
-  }
-
-  function initPioProjectWithBoard(board: string) {
-    pioInitPath = primaryCwd;
-    initPioProject(board);
-  }
-
-  async function runPioTarget(target: string) {
-    try {
-      const res = await invoke<PioResult>("pio_run", { target, directory: primaryCwd });
-      pioStatusMsg = `pio ${target}: ${res.success ? "done" : "failed"}`;
-      addLog(`PIO ${target}: ${res.success ? "OK" : "FAIL"}`);
-      if (!res.success) console.error(res.error);
-    } catch (e: any) {
-      pioStatusMsg = `pio ${target} error`;
-      console.error(e);
-    }
-  }
-
-  $effect(() => {
-    if (sidebarView === "platformio") checkPio();
-  });
-
-  function runScriptSetup(type: string) {
-    const scripts: Record<string, { cmd: string; args: string[] }> = {
-      antigravity: { cmd: "powershell", args: ["-c", "Invoke-Expression (Invoke-RestMethod https://raw.githubusercontent.com/antigravity/cli/main/install.ps1)"] },
-      opencode: { cmd: "powershell", args: ["-c", "Invoke-Expression (Invoke-RestMethod https://raw.githubusercontent.com/opencode-ai/cli/main/install.ps1)"] },
-    };
-    const s = scripts[type];
-    if (!s) return;
-    // Try to find an existing terminal tab, or create one
-    let termTab = tabs.find(t => t.type === "terminal");
-    if (!termTab) {
-      const id = `tab-term-${Date.now()}`;
-      tabs = [...tabs, { id, type: "terminal" as TabType, label: "Terminal" }];
-      termTab = tabs[tabs.length - 1];
-    }
-    addLog(`Running ${type} setup script...`);
-    const isWin = navigator.userAgent.toLowerCase().includes("win");
-    // Write the script command into the terminal via invoke
-    invoke("pty_write", { sessionId: "term-1", data: `${s.cmd} ${s.args.join(" ")}${isWin ? "\r" : "\n"}` }).catch(e => console.error(e));
-  }
+  let pioFilteredBoards = $derived(getFilteredBoards(pioState));
 
   // ─── Extensions ──────────────────────────────
-  type Extension = {
-    id: string; name: string; version: string; description: string; type: string;
-    url?: string; installed: boolean;
-    theme?: Record<string, string>;
-    icons?: Record<string, string>;
-    scripts?: { install?: string; uninstall?: string };
-  };
-
+  import { loadExtensions, saveExtensions, applyExtensionTheme, removeExtensionTheme, addExtensionFromUrl, removeExtension, toggleExtension, type Extension } from "$lib/utils/extensions";
+  
   let extensions = $state<Extension[]>([]);
   let extUrl = $state("");
   let extBusy = $state(false);
   let extMsg = $state("");
+  
+  // Load extensions on init
+  extensions = loadExtensions();
 
-  function loadExtensions() {
-    try {
-      const raw = localStorage.getItem("nyxedit-extensions");
-      if (raw) extensions = JSON.parse(raw);
-    } catch {}
-  }
-
-  function saveExtensions() {
-    try { localStorage.setItem("nyxedit-extensions", JSON.stringify(extensions)); } catch {}
-  }
-
-  function applyExtensionTheme(ext: Extension) {
-    if (!ext.theme || !ext.installed) return;
-    const root = document.documentElement;
-    for (const [key, val] of Object.entries(ext.theme)) {
-      root.style.setProperty(key, val);
-    }
-  }
-
-  function removeExtensionTheme(ext: Extension) {
-    if (!ext.theme) return;
-    const root = document.documentElement;
-    for (const key of Object.keys(ext.theme)) {
-      root.style.removeProperty(key);
-    }
-    applyTheme(getStoredTheme());
-  }
-
-  async function addExtensionFromUrl(url: string) {
-    if (!url.trim()) return;
-    extBusy = true; extMsg = "Fetching...";
-    try {
-      const res = await tauriFetch(url.trim());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (!data.name) throw new Error("Invalid extension format: missing 'name'");
-      const id = "ext-" + Date.now().toString(36);
-      const ext: Extension = {
-        id, name: data.name, version: data.version || "1.0",
-        description: data.description || "", type: data.type || "misc",
-        url: url.trim(), installed: true,
-        theme: data.theme, icons: data.icons, scripts: data.scripts,
-      };
-      extensions = [...extensions, ext];
-      saveExtensions();
-      if (ext.theme) applyExtensionTheme(ext);
-      if (ext.icons) {
-        const all = { ...getExtensionIcons(), ...ext.icons };
-        setExtensionIcons(all);
-      }
-      if (ext.scripts?.install) {
-        const termTab = tabs.find(t => t.type === "terminal");
-        if (termTab) activeTabId = termTab.id;
-        const isWin = navigator.userAgent.toLowerCase().includes("win");
-        invoke("pty_write", { sessionId: "term-1", data: ext.scripts.install + (isWin ? "\r" : "\n") }).catch(() => {});
-      }
-      extMsg = `Installed: ${ext.name}`;
-      extUrl = "";
-    } catch (e: any) {
-      extMsg = `Error: ${e.message}`;
-    }
-    extBusy = false;
-  }
-
-  function removeExtension(id: string) {
-    const ext = extensions.find(e => e.id === id);
-    if (!ext) return;
-    if (ext.scripts?.uninstall) {
-      const isWin = navigator.userAgent.toLowerCase().includes("win");
-      invoke("pty_write", { sessionId: "term-1", data: ext.scripts.uninstall + (isWin ? "\r" : "\n") }).catch(() => {});
-    }
-    removeExtensionTheme(ext);
-    if (ext.icons) {
-      const all = getExtensionIcons();
-      for (const k of Object.keys(ext.icons)) delete all[k];
-      setExtensionIcons(all);
-    }
-    extensions = extensions.filter(e => e.id !== id);
-    saveExtensions();
-    extMsg = `Removed: ${ext.name}`;
-  }
-
-  function toggleExtension(id: string) {
-    const ext = extensions.find(e => e.id === id);
-    if (!ext) return;
-    if (ext.installed) {
-      removeExtension(id);
-    } else {
-      if (ext.url) addExtensionFromUrl(ext.url);
-    }
-  }
-
-  loadExtensions();
-
-  // ─── Tab labels ───────────────────────────────
-  const TAB_LABELS: Record<TabType, string> = {
-    file: "Untitled", settings: "Settings", setup: "Setup",
-    terminal: "Terminal", preview: "Preview",
-    ssh_session: "SSH", private: "Private",
-    api_client: "API Client",
-    db_query: "DB Query",
-    diff: "AI Diff",
-    ai_chat: "AI Chat",
-  };
-  const TAB_ICONS: Record<TabType, string> = {
-    file: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>`,
-    settings: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>`,
-    setup: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`,
-    terminal: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
-    preview: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`,
-    ssh_session: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="4"/><line x1="6" y1="6" x2="18" y2="6"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="18" x2="18" y2="18"/></svg>`,
-    private: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
-    api_client: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
-    db_query: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
-    diff: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>`,
-    ai_chat: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`,
-  };
+  // ─── Tab labels & icons (moved to utils) ──────
+  import { TAB_LABELS, TAB_ICONS, createTabId, generateTabLabel } from "$lib/utils/tabHelpers";
 
   function normalizeUrl(url: string): string {
     if (!url || url === "undefined") return url;
@@ -425,11 +208,12 @@
   function addTab(type: TabType, extra?: Partial<Tab>) {
     const base = TAB_LABELS[type];
     const count = tabs.filter((t) => t.type === type).length;
-    const label = type === "terminal" || type === "file" ? `${base} ${count + 1}` : base;
-    const id = "tab-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 4);
+    const label = generateTabLabel(type, count);
+    const id = createTabId("tab");
     tabs = [...tabs, { id, type, label, ...extra }];
     activeTabId = id;
     addMenuOpen = false;
+    return id;
   }
 
   function closeTab(id: string) {
@@ -500,6 +284,10 @@
     }).catch(() => {
       addTab("file", { label: name, filePath: path, fileContent: "" });
     });
+    
+    // Auto-detect workspace saat buka file/folder
+    const dir = path.includes(".") ? path.substring(0, path.lastIndexOf("/")) : path;
+    autoLoadIntel(dir);
   }
 
   function handleFileSave(path: string, content: string) {
@@ -592,14 +380,8 @@
   });
 
   // Open SSH session as a dedicated tab
-  function openSshSessionTab(profile: any) {
-    const existing = tabs.find(t => t.type === "ssh_session" && t.sshProfile?.id === profile.id);
-    if (existing) { activeTabId = existing.id; return; }
-    const id = "tab-ssh-" + Date.now().toString(36);
-    tabs = [...tabs, { id, type: "ssh_session", label: `SSH: ${profile.name}`, sshProfile: profile }];
-    activeTabId = id;
-  }
-
+  import { openSshSessionTab, onRemoteFileOpen, markSessionPrivate } from "$lib/utils/ssh";
+  
   function openDbQueryTab(connId: string, label: string) {
     const existing = tabs.find(t => t.type === "db_query" && t.connectionId === connId);
     if (existing) { activeTabId = existing.id; return; }
@@ -608,52 +390,27 @@
     activeTabId = id;
   }
 
-  async function onRemoteFileOpen(sessionId: string, remotePath: string, name: string) {
-    const path = `sftp://${sessionId}${remotePath}`;
-    const existing = tabs.find((t) => t.filePath === path);
-    if (existing) { activeTabId = existing.id; return; }
-    
-    try {
-      addLog(`Opening remote file ${remotePath} via SFTP...`);
-      const content = await invoke<string>("sftp_read_file", {
-        sessionId, remotePath
-      });
-      addTab("file", { label: `[Remote] ${name}`, filePath: path, fileContent: content });
-    } catch (e) {
-      addToast(`Failed to open remote file: ${e}`, "error");
-    }
-  }
-
-  // Register a PTY session as private (AI-restricted)
-  async function markSessionPrivate(sessionId: string) {
-    try {
-      await invoke("pty_mark_private", { sessionId });
-      privateSessionIds = new Set([...privateSessionIds, sessionId]);
-    } catch (e) {
-      console.error("Failed to mark private:", e);
-    }
-  }
-
   // ─── Custom Window Controls ───────────────────
   const appWindow = getCurrentWindow();
   function minimizeWindow() {
-    console.log("Minimizing window...");
+    log("Minimizing window...");
     appWindow.minimize().catch(err => {
-      console.error("Minimize error:", err);
+      err("Minimize error:", err);
       alert("Minimize error: " + err);
     });
   }
   async function toggleMaximizeWindow() {
-    console.log("Toggling maximize window...");
+    log("Toggling maximize window...");
     try {
       if (await appWindow.isMaximized()) {
         await appWindow.unmaximize();
       } else {
         await appWindow.maximize();
       }
-    } catch (err) {
-      console.error("Maximize error:", err);
-      alert("Maximize error: " + err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("Maximize error:", msg);
+      alert("Maximize error: " + msg);
     }
   }
   async function openNewWindow() {
@@ -668,8 +425,9 @@
         minHeight: 600,
         decorations: false
       });
-    } catch (err) {
-      console.error("Failed to open new window:", err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("Failed to open new window:", msg);
     }
   }
 
@@ -682,8 +440,9 @@
       if (selected && typeof selected === "string") {
         onFileOpen(selected);
       }
-    } catch (err) {
-      console.error("Open file error:", err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("Open file error:", msg);
     }
   }
 
@@ -697,8 +456,9 @@
         primaryCwd = selected;
         currentDir.set(selected);
       }
-    } catch (err) {
-      console.error("Open folder error:", err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log("Open folder error:", msg);
     }
   }
 
@@ -712,21 +472,21 @@
   }
 
   function closeWindow() {
-    console.log("Closing window...");
+    log("Closing window...");
     appWindow.close().catch(err => {
-      console.error("Close error:", err);
+      err("Close error:", err);
       alert("Close error: " + err);
     });
   }
 
   function handleHeaderMousedown(e: MouseEvent) {
-    if (e.button !== 0) return; // Only left-click
+    if (e.button !== 0) return;
     const target = e.target as HTMLElement;
     if (target.closest(".mac-controls, .tab-add-wrap, button, input, select, textarea, .add-menu")) {
-      return; // Skip drag when clicking active controls
+      return;
     }
     appWindow.startDragging().catch(err => {
-      console.log("Manual drag failed:", err);
+      log("Manual drag failed:", err);
     });
   }
 
@@ -734,13 +494,15 @@
   function onTerminalCwdChange(cwd: string) {
     primaryCwd = cwd;
     currentDir.set(cwd);
+    autoDetectWorkspace(cwd, {
+      onProjectDetected: (fw) => log(`Project detected: ${fw}`),
+      onLog: (msg) => log(msg)
+    });
   }
 
   // ─── Sidebar ──────────────────────────────────
-  const SIDEBAR_LABELS: Record<string, string> = {
-    files: "Workspace", search: "Search", ssh: "SSH Tree", postman: "API Client", mqtt: "MQTT Client", platformio: "Platform IO", extensions: "Extensions", database: "Database Client", intel: "Intel",
-  };
-
+  import { SIDEBAR_LABELS } from "$lib/utils/ssh";
+  
   function toggleSidebar(view: SidebarView) {
     sidebarView = sidebarView === view ? null : view;
   }
@@ -807,7 +569,7 @@
         const entry = ctxFilePath!;
         const dir = entry.includes(".") ? entry.substring(0, entry.lastIndexOf("\\")) : entry;
         const isWin = navigator.userAgent.toLowerCase().includes("win");
-        invoke("pty_write", { sessionId: "term-1", data: `cd "${dir}"${isWin ? "\r" : "\n"}` }).catch(() => {});
+        invoke("pty_write", { sessionId: getActiveTerminalSession(), data: `cd "${dir}"${isWin ? "\r" : "\n"}` }).catch(() => {});
         primaryCwd = dir;
         currentDir.set(dir);
       },
@@ -1088,27 +850,27 @@
             <div class="pio-sidebar">
               <div class="pio-status-bar" style="display: flex; justify-content: space-between; align-items: center; width: 100%; box-sizing: border-box;">
                 <div style="display: flex; align-items: center; gap: 8px;">
-                  {#if pioBusy || pioInstalling}
+                  {#if pioState.busy || pioState.installing}
                     <span class="pio-spinner"></span>
                   {/if}
-                  <span class="pio-status-text" class:pio-installed={pioStatus.installed} class:pio-not-installed={!pioStatus.installed}>
-                    {#if pioStatusMsg}
-                      {pioStatusMsg}
-                    {:else if pioStatus.installed}
-                      {pioStatus.version || "PlatformIO ready"}
-                    {:else if pioStatus.error}
+                  <span class="pio-status-text" class:pio-installed={pioState.status.installed} class:pio-not-installed={!pioState.status.installed}>
+                    {#if pioState.statusMsg}
+                      {pioState.statusMsg}
+                    {:else if pioState.status.installed}
+                      {pioState.status.version || "PlatformIO ready"}
+                    {:else if pioState.status.error}
                       Error checking PlatformIO
                     {:else}
                       Checking...
                     {/if}
                   </span>
                 </div>
-                <button class="tool-btn" onclick={() => checkPio(true)} title="Recheck PlatformIO" style="padding: 2px;">
+                <button class="tool-btn" onclick={() => checkPio(true, pioState, addLog)} title="Recheck PlatformIO" style="padding: 2px;">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
                 </button>
               </div>
 
-              {#if !pioStatus.installed && !pioBusy}
+              {#if !pioState.status.installed && !pioState.busy}
                 <div class="pio-section pio-install-section">
                   <div class="pio-install-info">
                     <svg width="32" height="32" viewBox="0 0 48 48" fill="none">
@@ -1119,30 +881,30 @@
                     </svg>
                     <span>PlatformIO is not installed</span>
                     <span class="pio-detail">Python required. Will install via pip.</span>
-                    {#if pioStatus.python}
-                      <span class="pio-detail pio-py-ok">&#10003; {pioStatus.python}</span>
+                    {#if pioState.status.python}
+                      <span class="pio-detail pio-py-ok">&#10003; {pioState.status.python}</span>
                     {:else}
                       <span class="pio-detail pio-py-missing">&#10007; Python not found</span>
                     {/if}
                   </div>
-                  <button class="pio-install-btn" onclick={installPio} disabled={pioInstalling || !pioStatus.python}>
-                    {pioInstalling ? "Installing..." : "Install PlatformIO"}
+                  <button class="pio-install-btn" onclick={() => installPio(pioState, addLog)} disabled={pioState.installing || !pioState.status.python}>
+                    {pioState.installing ? "Installing..." : "Install PlatformIO"}
                   </button>
                 </div>
               {/if}
 
-              {#if pioStatus.installed}
+              {#if pioState.status.installed}
                 <div class="pio-section">
                   <div class="pio-section-title">QUICK ACCESS</div>
-                  <button class="pio-item" onclick={() => runPioTarget("build")}>
+                  <button class="pio-item" onclick={() => runPioTarget("build", primaryCwd, pioState, addLog)}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                     <span>Build</span>
                   </button>
-                  <button class="pio-item" onclick={() => runPioTarget("upload")}>
+                  <button class="pio-item" onclick={() => runPioTarget("upload", primaryCwd, pioState, addLog)}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     <span>Upload</span>
                   </button>
-                  <button class="pio-item" onclick={() => runPioTarget("clean")}>
+                  <button class="pio-item" onclick={() => runPioTarget("clean", primaryCwd, pioState, addLog)}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/></svg>
                     <span>Clean</span>
                   </button>
@@ -1155,30 +917,29 @@
                 <div class="pio-section">
                   <div class="pio-section-title">INIT PROJECT</div>
                   <div class="pio-init-row">
-                    <input class="pio-init-input" bind:value={pioInitPath} placeholder={primaryCwd || "Project path..."} />
-                    <button class="pio-init-btn" onclick={() => initPioProject()} disabled={pioBusy}>Init</button>
+                    <input class="pio-init-input" bind:value={pioState.initPath} placeholder={primaryCwd || "Project path..."} />
+                    <button class="pio-init-btn" onclick={() => initPioProject(undefined, primaryCwd, pioState, addLog)} disabled={pioState.busy}>Init</button>
                   </div>
                 </div>
 
                 <div class="pio-section">
-                  <div class="pio-section-title">BOARDS ({pioBoards.length})</div>
+                  <div class="pio-section-title">BOARDS ({pioState.boards.length})</div>
                   <div class="pio-board-search">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <input type="text" bind:value={pioBoardSearch} placeholder="Search boards..." class="pio-search-input" />
+                    <input type="text" bind:value={pioState.boardSearch} placeholder="Search boards..." class="pio-search-input" />
                   </div>
                   <div class="pio-boards-list">
                     {#each pioFilteredBoards as board}
-                      <button class="pio-item pio-board" onclick={() => initPioProjectWithBoard(board)}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="9" y1="6" x2="15" y2="6"/><line x1="12" y1="2" x2="12" y2="6"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="17" r="1"/><circle cx="15" cy="17" r="1"/></svg>
+                      <button class="pio-item pio-board" onclick={() => initPioProjectWithBoard(board, primaryCwd, pioState, addLog)}>\n                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="9" y1="6" x2="15" y2="6"/><line x1="12" y1="2" x2="12" y2="6"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="17" r="1"/><circle cx="15" cy="17" r="1"/></svg>
                         <span>{board}</span>
                       </button>
                     {:else}
-                      {#if pioBoardSearch}
-                        <div class="pio-no-results">No boards match "{pioBoardSearch}"</div>
+                      {#if pioState.boardSearch}
+                        <div class="pio-no-results">No boards match "{pioState.boardSearch}"</div>
                       {/if}
                     {/each}
-                    {#if !pioBoardSearch && pioBoards.length > MAX_PIO_BOARDS}
-                      <div class="pio-no-results">Showing {MAX_PIO_BOARDS} of {pioBoards.length} boards</div>
+                    {#if !pioState.boardSearch && pioState.boards.length > pioState.boardLimit}
+                      <div class="pio-no-results">Showing {pioState.boardLimit} of {pioState.boards.length} boards</div>
                     {/if}
                   </div>
                 </div>
@@ -1188,8 +949,8 @@
             <div class="ext-sidebar">
               <div class="ext-input-row">
                 <input class="ext-input" bind:value={extUrl} placeholder="Paste URL to extension.json..." disabled={extBusy}
-                  onkeydown={(e) => { if (e.key === "Enter") addExtensionFromUrl(extUrl); }} />
-                <button class="ext-add-btn" onclick={() => addExtensionFromUrl(extUrl)} disabled={extBusy || !extUrl.trim()}>
+                  onkeydown={(e) => { if (e.key === "Enter") addExtensionFromUrl(extUrl, extensions, (exts) => extensions = exts, addLog, tabs, (id) => activeTabId = id); }} />
+                <button class="ext-add-btn" onclick={() => addExtensionFromUrl(extUrl, extensions, (exts) => extensions = exts, addLog, tabs, (id) => activeTabId = id)} disabled={extBusy || !extUrl.trim()}>
                   {extBusy ? "..." : "+"}
                 </button>
               </div>
@@ -1204,7 +965,7 @@
                       <span class="ext-name">{ext.name} <span class="ext-ver">v{ext.version}</span></span>
                       <span class="ext-desc">{ext.description || ext.type}</span>
                     </div>
-                    <button class="ext-btn ext-installed" onclick={() => removeExtension(ext.id)}>Remove</button>
+                    <button class="ext-btn ext-installed" onclick={() => { const r = removeExtension(ext.id, extensions, (exts) => extensions = exts, addLog); extMsg = r; }}>Remove</button>
                   </div>
                 {:else}
                   <div class="ext-empty">No extensions installed.<br/>Paste a URL above.</div>
