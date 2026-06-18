@@ -20,10 +20,15 @@
 - `src/` — frontend SvelteKit (`routes/`, `lib/components/`)
 - `src-tauri/` — backend Rust dengan modul:
   - `pty.rs` — terminal emulation (portable-pty)
-  - `ai.rs` — multi-agent AI chat
+  - `ai.rs` — multi-agent AI chat + ReAct loop + fallback system + CLI Gateway integration
   - `fs.rs` — file management + git operasi
   - `pio.rs` — PlatformIO integration
   - `secrets.rs` — credential storage (keyring)
+  - `cli.rs` — CLI Discovery Engine + CliAdapter trait + 6 adapter impl (Claude/Gemini/OpenCode/Aider/Codex/Agy) + streaming subprocess
+  - `executor.rs` — tool execution engine + permission state + diff computation
+  - `handoff.rs` — handoff file management for cross-agent task persistence
+  - `provider.rs` — AiProvider trait + LiteLLM provider abstraction
+  - `router.rs` — RouterDecision (RouteClass + ExecutionMode) + sensitive content detection
 - `build/` — output frontend (gitignored, tapio dibaca Tauri)
 - `lib/` dan `include/` — sisa PlatformIO project (tidak dipakai Tauri)
 
@@ -41,7 +46,7 @@
 - Gunakan `adapter-static` -> jangan pakai server-side rendering
 - `npm run check` **sebelum** commit untuk cek error Svelte/TypeScript
 - Rust tests: `cd src-tauri && cargo test`
-  - 23 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing)
+  - 36 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing, CLI adapters, executor, router, provider)
   - 5 API tests (`#[ignore]` — run with `cargo test -- --ignored`, needs env vars)
 - `env_logger::init()` di `run()` — log Rust via env var `RUST_LOG`
 
@@ -50,6 +55,7 @@
 - **CMMO 14 stage architecture**: Smart Routing, Tool-First Engine, Chaining, SQLite, Knowledge Graph, Project Intel, Review, Multi-Model, Multi-Agent, DAG, Self-Healing, Performance & DX, RAG Context, Cost Routing.
 - **Low RAM Optimization**: Replaced default memory allocator with `mimalloc` to mitigate fragmentation. Implemented Lazy Loading for the Stage 5 symbol graph (`SymbolGraph`) which loads on demand only when queried, and added `graph_unload_workspace` to allow unloading the graph and freeing up memory on demand.
 - **Multi-Folder Workspace Support**: Implemented workspace folder stacking (multi-root project workspaces) in the Svelte file explorer tree, configuration saving/loading to `.workspace` files (including support for VS Code `.code-workspace` configuration JSON schemas), dynamic path separator resolution, and merging file entries for AI contextual mentions.
+- **CLI Agent Gateway**: Full integration of 6 external CLI agents (Claude, Gemini, OpenCode, Aider, Codex, Agy) into the ReAct loop as tools. CLI Discovery Engine auto-detects installed CLIs. External agents can be triggered via auto-routing (Intent::ExternalAgent) or directly called as tools (`claude_run`, `gemini_run`, etc.) from the ReAct loop.
 
 ## API Test Results
 | Provider | API Key | Model | Status |
@@ -60,8 +66,8 @@
 | Gemini | `AIzaSyD-REDACTED` | `gemini-2.0-flash` | ✅ Key valid, free-tier quota exhausted |
 
 ## Testing
-- `cargo test` — runs 23 unit tests (no API keys needed, ~9s)
-  - 23 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing) 
+- `cargo test` — runs 36 unit tests (no API keys needed, ~9s)
+  - 36 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing, CLI adapters, executor, router, provider)
 - `CEREBRAS_API_KEY=... cargo test -- --ignored` — API integration tests
 - React loop test (`test_react_loop_coder_read_file`) confirms tool-calling ReAct loop works end-to-end
 
@@ -78,7 +84,7 @@
 |---|---|---|---|
 | **1** Smart Routing | ✅ `ModelRegistry`, `FallbackManager`, `models.toml` | ✅ Auto Mode di `ai_chat_stream` | ✅ Ya — dipanggil tiap auto mode |
 | **2** Tool-First Engine | ✅ `ripgrep.rs`, TreeSitter, scan cache | ❌ Tool-only route lewat stream | ✅ Ya — tool-only skip model call |
-| **3** Chaining | ✅ `chain_engine.rs`, `run_chain()` | ✅ `ChainProgressPanel.svelte` | ✅ Ya — kalau routing bikin chain plan |
+| **3** Chaining | ✅ `chain_engine.rs`, `run_chain()` | ✅ `ai-proc` compact bar (AIChat.svelte) | ✅ Ya — kalau routing bikin chain plan |
 | **4** SQLite | ✅ `sessions.rs` SQLite rewrite, 4 commands | ✅ Session list/save/load | ✅ Ya — tiap chat pake database |
 | **5** Knowledge Graph | ✅ `symbol_graph.rs`, `parsers.rs`, file watcher | ❌ 12 commands registered | 🔶 Parsial — search/query lazy-loaded (hanya di-load ke RAM saat query pertama), `graph_unload_workspace` unloads RAM |
 | **6** Project Intel | ✅ `project_intel.rs`, framework detection | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `project_detect` dulu |
@@ -108,25 +114,33 @@
 - `src-tauri/src/modules/self_heal.rs` — SelfHealEngine + component health tracking + crash marker
 - `src-tauri/src/modules/context.rs` — conversation context compression + cross-session retrieval
 - `src-tauri/src/modules/cost_routing.rs` — cost-aware model selection + budget enforcement
+- `src-tauri/src/modules/cli.rs` — CLI Discovery Engine + 6 adapter impl + streaming subprocess
+- `src-tauri/src/modules/executor.rs` — tool execution engine + permission state + diff computation
+- `src-tauri/src/modules/handoff.rs` — handoff file management for cross-agent task persistence
+- `src-tauri/src/modules/provider.rs` — AiProvider trait + LiteLLM provider abstraction
+- `src-tauri/src/modules/router.rs` — RouterDecision (RouteClass + ExecutionMode) + sensitive content detection
 - `src-tauri/src/modules/mod.rs` — semua module registrations
 - `src-tauri/src/modules/model_registry.rs` — +`load()` TOML method
-- `src-tauri/src/modules/routing_engine.rs` — SYMBOL_LOOKUP → TreeSitter, +`route_with_context()`
+- `src-tauri/src/modules/routing_engine.rs` — SYMBOL_LOOKUP → TreeSitter, +`route_with_context()`, +ExternalAgent intent
 - `src-tauri/src/modules/tool_registry.rs` — +TreeSitter in load_default()
-- `src-tauri/src/modules/ai.rs` — +tool-only route, +fallback loop with circuit breaker, +`run_chain()`, +`run_dag()`, +health reporting, +cost budget, +context compression
+- `src-tauri/src/modules/ai.rs` — +tool-only route, +fallback loop with circuit breaker, +`run_chain()`, +`run_dag()`, +health reporting, +cost budget, +context compression, +`execute_cli_tool()`, +CLI tools in `build_tools()`, +ExternalAgent route in `ai_chat_stream`
 - `src-tauri/src/modules/sessions.rs` — full rewrite: JSON files → SQLite (async commands) + `recover_last_session`
 - `src-tauri/src/lib.rs` — +graph state + all new module states + commands
 
 ### Frontend changes
-- `src/lib/components/AIChat.svelte` — +chainSteps state, `ai:route_progress` parser, ChainProgressPanel stepper
+- `src/lib/components/AIChat.svelte` — +chainSteps state, `ai:route_progress` parser, chain/DAG → compact `ai-proc` bar (animated grey line + summary text, auto-hilang)
 - `src/lib/components/FileManager.svelte` — implemented multi-root workspace explorer headers, folder-plus/save icons, "Open Workspace" empty states, dynamic path slashes, and mount reloading hooks
 - `src/lib/stores.svelte.ts` — updated `loadWorkspace` to read multi-root file entries and populate merged autocomplete indexes
 - `src/lib/components/GitStatus.svelte` — implemented folder selector dropdown to switch active Git target on multi-folder workspaces
 - `src/lib/components/SearchInFiles.svelte` — implemented parallel multi-folder file/content search and relative path rendering with folder tags
 - `src/lib/components/FileManager.svelte` & `GitStatus.svelte` — migrated store subscriptions to `onMount` and wrapped reactive effects in Svelte 5 `untrack()` to eliminate infinite rendering loops and CPU spikes
 - `src/lib/components/IntelPanel.svelte` — implemented active workspace target dropdown selector to dynamically load and index symbols for multi-folder targets
+- `src/lib/components/Terminal.svelte` — added paste confirmation with `[Paste ~N lines]` floating bar + `attachCustomKeyEventHandler` for Ctrl+V/Shift+Insert + right-click context menu (Copy/Paste/Select All)
+- `src/lib/components/AIFloatingBar.svelte` — added paste confirmation (Paste ~N lines bar, Enter confirm, Esc cancel) for text paste, image/file paste unchanged
+- `src/lib/components/AIChat.svelte` — replaced chain/DAG stepper with compact `ai-proc` grey shimmer line + single-line status summary, auto-clear on done
 
 ### Verification
 - `cargo check`: 0 errors
-- `cargo test`: 19/19 passed, 5 ignored (API tests need env vars)
-- `npm run check`: 0 errors (71 pre-existing warnings)
+- `cargo test`: 36/36 passed, 5 ignored (API tests need env vars)
+- `npm run check`: 0 errors (74 pre-existing warnings)
 - Total CMMO: Stage 1–14 100% backend, ~40% frontend integration

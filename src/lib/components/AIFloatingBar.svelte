@@ -8,13 +8,15 @@
   let agentList = $state<{ id: string; label: string }[]>([]);
   let isDragging = $state(false);
 
-  // Workspace files for '@' mentions autocomplete
   let allFiles = $state<any[]>([]);
   let showMentionDropdown = $state(false);
   let mentionQuery = $state("");
   let selectedMentionIndex = $state(0);
   let textareaRef = $state<HTMLTextAreaElement | null>(null);
   let isSelectFocused = $state(false);
+
+  let pendingPaste = $state<string | null>(null);
+  let pasteConfirmVisible = $state(false);
 
   $effect(() => {
     const unsubscribe = agents.subscribe(list => {
@@ -93,6 +95,35 @@
     showMentionDropdown = false;
   }
 
+  function confirmPaste() {
+    if (pendingPaste != null && textareaRef) {
+      const selStart = textareaRef.selectionStart;
+      const selEnd = textareaRef.selectionEnd;
+      const before = input.slice(0, selStart);
+      const after = input.slice(selEnd);
+      input = before + pendingPaste + after;
+      const newCursor = selStart + pendingPaste.length;
+      setTimeout(() => {
+        textareaRef!.selectionStart = textareaRef!.selectionEnd = newCursor;
+        textareaRef!.focus();
+      }, 10);
+    }
+    pendingPaste = null;
+    pasteConfirmVisible = false;
+  }
+
+  function cancelPaste() {
+    pendingPaste = null;
+    pasteConfirmVisible = false;
+    textareaRef?.focus();
+  }
+
+  function triggerPaste(text: string) {
+    if (!text) return;
+    pendingPaste = text;
+    pasteConfirmVisible = true;
+  }
+
   function checkMention(text: string, selectionEnd: number) {
     const textBeforeCursor = text.slice(0, selectionEnd);
     const atIndex = textBeforeCursor.lastIndexOf("@");
@@ -135,6 +166,17 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    if (pasteConfirmVisible) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        confirmPaste();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelPaste();
+      }
+      return;
+    }
+
     if (showMentionDropdown && filteredFiles.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -190,7 +232,6 @@
   async function handlePaste(e: ClipboardEvent) {
     if (!e.clipboardData) return;
 
-    // Check for images in clipboard (e.g. screenshots or copied browser images)
     const items = Array.from(e.clipboardData.items);
     let hasImage = false;
     for (const item of items) {
@@ -209,13 +250,11 @@
         }
       }
     }
-
     if (hasImage) {
       e.preventDefault();
       return;
     }
 
-    // Fallback to normal files
     const filesList = Array.from(e.clipboardData.files);
     if (filesList.length > 0) {
       e.preventDefault();
@@ -225,6 +264,13 @@
           attachedFiles = [...attachedFiles, path];
         }
       }
+      return;
+    }
+
+    const text = e.clipboardData.getData("text/plain");
+    if (text) {
+      e.preventDefault();
+      triggerPaste(text);
     }
   }
 </script>
@@ -250,7 +296,6 @@
       </div>
     </div>
   {/if}
-  <!-- Autocomplete drop-down above the input bar -->
   {#if showMentionDropdown && filteredFiles.length > 0}
     <div class="mention-dropdown">
       {#each filteredFiles as file, index}
@@ -279,8 +324,21 @@
       </div>
     {/if}
 
+    {#if pasteConfirmVisible}
+      <div class="pc-bar" role="alert">
+        <svg class="pc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+        </svg>
+        <span class="pc-text">Paste ~{pendingPaste?.split('\n').length || 0} lines</span>
+        <span class="pc-hint">
+          <span class="pc-key">Enter</span> paste
+          <span class="pc-key">Esc</span> cancel
+        </span>
+      </div>
+    {/if}
+
     <div class="floating-bar-content">
-      <!-- Agent selection dropdown -->
       <div class="agent-select-wrapper">
         <select 
           bind:value={selectedAgentId} 
@@ -296,7 +354,6 @@
 
       <div class="bar-divider"></div>
 
-      <!-- Input text area -->
       <textarea
         bind:this={textareaRef}
         value={input}
@@ -308,7 +365,6 @@
         class="bar-textarea"
       ></textarea>
 
-      <!-- Send button -->
       <button class="send-btn" onclick={handleSend} disabled={!input.trim()} title="Send prompt to AI">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="22" y1="2" x2="11" y2="13"/>
@@ -494,7 +550,6 @@
     filter: brightness(1.1);
   }
 
-  /* Mention Autocomplete Dropdown styles */
   .mention-dropdown {
     position: absolute;
     bottom: calc(100% + 8px);
@@ -551,7 +606,6 @@
     margin-left: 8px;
   }
 
-  /* Drag & Drop Overlay Visual Effects */
   .ai-floating-bar-wrapper.is-dragging .ai-floating-bar {
     opacity: 1;
     transform: translateY(-2px) scale(1.02);
@@ -590,22 +644,66 @@
   }
 
   @keyframes fadeInScale {
-    from {
-      opacity: 0;
-      transform: scale(0.96);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
   }
 
   @keyframes bounceUpDown {
-    from {
-      transform: translateY(-3px);
-    }
-    to {
-      transform: translateY(3px);
-    }
+    from { transform: translateY(-3px); }
+    to { transform: translateY(3px); }
+  }
+
+  .pc-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin: 0 2px 4px;
+    background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-primary));
+    border: 1px solid var(--accent-blue);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s ease;
+    animation: slideDown 0.15s ease;
+  }
+  .pc-bar:hover {
+    background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
+  }
+  .pc-icon {
+    color: var(--accent-blue);
+    flex-shrink: 0;
+  }
+  .pc-text {
+    font-size: var(--fs-11);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .pc-hint {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    font-size: 9px;
+    color: var(--text-muted);
+  }
+  .pc-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 14px;
+    padding: 0 3px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-size: 8px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    line-height: 1;
+  }
+  @keyframes slideDown {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 </style>

@@ -43,6 +43,9 @@ export type ChatMessage = {
   content: string;
   display_content?: string;
   fileChanges?: { path: string; oldContent: string; newContent: string }[];
+  /** Provider and model that generated this message (stamped on ai:done). */
+  provider_used?: string;
+  model_used?: string;
 };
 
 export type ChatSession = {

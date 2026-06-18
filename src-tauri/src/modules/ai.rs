@@ -369,8 +369,17 @@ fn resolve_system_prompt(agent: &AgentConfig) -> String {
 
 pub fn default_base_url(provider: &str) -> &'static str {
     match provider {
+        "openai" => "https://api.openai.com/v1",
+        "anthropic" => "https://api.anthropic.com/v1",
+        "openrouter" => "https://openrouter.ai/api/v1",
+        "deepseek" => "https://api.deepseek.com/v1",
+        "mistral" => "https://api.mistral.ai/v1",
+        "cerebras" => "https://api.cerebras.ai/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "together" => "https://api.together.xyz/v1",
         "vercel" => "https://ai-gateway.vercel.sh/v1",
         "ollama" => "http://localhost:11434/v1",
+        "lmstudio" => "http://localhost:1234/v1",
         "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
         _ => "",
     }
@@ -730,6 +739,84 @@ fn build_tools() -> Vec<ToolDef> {
                     "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 30}
                 },
                 "required": ["command"]
+            }),
+        },
+        ToolDef {
+            name: "claude_run".into(),
+            description: "Run Claude CLI with a prompt (heavy coding tasks, refactoring, complex analysis).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for Claude"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDef {
+            name: "gemini_run".into(),
+            description: "Run Gemini CLI with a prompt (large context, multimodal, code analysis).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for Gemini"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDef {
+            name: "opencode_run".into(),
+            description: "Run OpenCode CLI with a prompt (agentic coding, file operations).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for OpenCode"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDef {
+            name: "aider_run".into(),
+            description: "Run Aider CLI with a prompt (git-aware pair programming, diffs).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for Aider"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDef {
+            name: "codex_run".into(),
+            description: "Run Codex CLI with a prompt (OpenAI agent, code generation).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for Codex"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
+            }),
+        },
+        ToolDef {
+            name: "agy_run".into(),
+            description: "Run Agy CLI with a prompt (lightweight agent).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for Agy"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
+                    "timeout": {"type": "integer", "description": "Timeout in seconds", "default": 120}
+                },
+                "required": ["prompt"]
             }),
         },
     ]
@@ -1160,8 +1247,67 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
             }
             Ok(result)
         }
+        "claude_run" | "gemini_run" | "opencode_run" | "aider_run" | "codex_run" | "agy_run" => {
+            execute_cli_tool(tc, workspace_root).await
+        }
         _ => Err(format!("Unknown tool: {}", tc.name)),
     }
+}
+
+async fn execute_cli_tool(tc: &ToolCall, workspace_root: &str) -> Result<String, String> {
+    let cli_name = match tc.name.as_str() {
+        "claude_run" => "claude",
+        "gemini_run" => "gemini",
+        "opencode_run" => "opencode",
+        "aider_run" => "aider",
+        "codex_run" => "codex",
+        "agy_run" => "agy",
+        _ => return Err(format!("Unknown CLI tool: {}", tc.name)),
+    };
+
+    let prompt = tc.arguments["prompt"].as_str().ok_or("missing prompt")?;
+    let cwd = tc.arguments["cwd"].as_str().unwrap_or("");
+    let timeout_secs = tc.arguments["timeout"].as_u64().unwrap_or(120);
+
+    let cwd_to_use = if cwd.is_empty() { workspace_root } else { cwd };
+
+    if !crate::modules::cli::is_installed(cli_name) {
+        return Err(format!("CLI '{}' not installed or not in PATH", cli_name));
+    }
+
+    let adapter = crate::modules::cli::all_adapters()
+        .into_iter()
+        .find(|a| a.name() == cli_name)
+        .ok_or(format!("No adapter for {}", cli_name))?;
+
+    let args = adapter.build_args(prompt, Some(cwd_to_use), true);
+    let mut cmd = tokio::process::Command::new(cli_name);
+    cmd.args(&args);
+
+    if !cwd_to_use.is_empty() {
+        cmd.current_dir(cwd_to_use);
+    }
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    .map_err(|_| format!("{} timed out after {}s", cli_name, timeout_secs))?
+    .map_err(|e| format!("{} error: {}", cli_name, e))?;
+
+    let mut result = String::new();
+    if !output.stdout.is_empty() {
+        result.push_str(&String::from_utf8_lossy(&output.stdout));
+    }
+    if !output.stderr.is_empty() {
+        if !result.is_empty() { result.push('\n'); }
+        result.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    if !output.status.success() {
+        result.push_str(&format!("\n(exit code: {:?})", output.status.code()));
+    }
+    Ok(result)
 }
 
 #[derive(Clone, Serialize)]
@@ -1340,6 +1486,11 @@ async fn run_react_loop(
     Ok((full_content, total_input, total_output))
 }
 
+/// Resolves the agent config for auto-routing. Returns the resolved AgentConfig.
+/// The returned agent carries the correct provider, model, base_url, and api_key.
+/// The `id` field reflects the matched provider-agent's ID (used for keychain lookup).
+/// If no provider agent is found for the target provider, falls back to default_base_url
+/// and keeps the baseline agent's id for keychain lookup.
 pub fn resolve_routed_agent(
     decision: &super::routing_engine::RouteDecision,
     registry: &super::model_registry::ModelRegistry,
@@ -1348,31 +1499,47 @@ pub fn resolve_routed_agent(
 ) -> AgentConfig {
     let mut agent = baseline_agent.clone();
     if let Some(ref model_id) = decision.model_route {
-        let mut resolved_model = model_id.clone();
         if let Some(model_meta) = registry.models.iter().find(|m| m.id == *model_id) {
             if let Some(provider_agent) = state.get_agent_for_provider(&model_meta.provider) {
-                agent.provider = provider_agent.provider;
-                agent.base_url = provider_agent.base_url;
+                // Found a configured agent for this provider — use all its settings
                 agent.id = provider_agent.id.clone();
+                agent.provider = provider_agent.provider.clone();
+                // Prefer provider_agent's base_url; fallback to default for that provider
+                agent.base_url = provider_agent.base_url.clone().or_else(|| {
+                    let u = default_base_url(&provider_agent.provider);
+                    if u.is_empty() { None } else { Some(u.to_string()) }
+                });
+                // Use stored key if not masked; otherwise keychain lookup in main loop
                 agent.api_key = provider_agent.api_key.clone();
-            } else if model_meta.provider != agent.provider {
+            } else {
+                // No configured agent for this provider — use model defaults
                 agent.provider = model_meta.provider.clone();
+                // Do NOT inject a default base_url here; keep base_url None so callers
+                // can decide whether to fall back. This preserves the legacy behaviour
+                // expected by unit tests.
                 agent.base_url = None;
+                // Keep baseline agent.id so keychain lookup can still find a key if user
+                // stored it under the original agent (e.g. auto-agent with provider key)
                 agent.api_key = None;
             }
         }
-        agent.model = resolved_model;
+        agent.model = model_id.clone();
     } else {
+        // No model routed — try to use any configured gemini agent, then any agent
         if let Some(provider_agent) = state.get_agent_for_provider("gemini") {
-            agent.provider = provider_agent.provider;
-            agent.base_url = provider_agent.base_url;
             agent.id = provider_agent.id.clone();
+            agent.provider = provider_agent.provider.clone();
+            agent.base_url = provider_agent.base_url.clone().or_else(|| {
+                let u = default_base_url("gemini");
+                if u.is_empty() { None } else { Some(u.to_string()) }
+            });
             agent.api_key = provider_agent.api_key.clone();
             agent.model = provider_agent.model.clone();
         } else {
+            // Last resort: fall back to gemini flash with default URL
             agent.model = "gemini-2.0-flash".to_string();
             agent.provider = "gemini".to_string();
-            agent.base_url = None;
+            agent.base_url = Some(default_base_url("gemini").to_string());
             agent.api_key = None;
         }
     }
@@ -1397,6 +1564,56 @@ pub fn resolve_fallback_agent(
         agent.provider = next_fallback.provider.clone();
     }
     agent
+}
+
+/// Score a model name by rough capability for fallback ordering.
+/// Higher = try later (prefer cheaper/faster alternatives first, escalate on failure).
+/// This gives a reasonable ordering: nano < mini < flash < default < plus < medium < large < pro < ultra/opus
+fn model_capability_score(model: &str) -> i32 {
+    let m = model.to_lowercase();
+    // Tier 1: premium reasoning
+    if m.contains("ultra") || m.contains("opus") { return 100; }
+    // Tier 2: pro / large / max
+    if m.contains("-pro") || m.contains("_pro") || m.ends_with("pro")
+        || m.contains("large") || m.contains("-max") || m.contains("r1") { return 80; }
+    // Tier 3: medium / plus / sonnet / 70b
+    if m.contains("plus") || m.contains("medium") || m.contains("sonnet")
+        || m.contains("70b") || m.contains("72b") { return 60; }
+    // Tier 4: flash / mini / standard
+    if m.contains("flash") || m.contains("-mini") || m.contains("_mini")
+        || m.contains("8b") || m.contains("7b") { return 40; }
+    // Tier 5: nano / tiny / lite
+    if m.contains("nano") || m.contains("tiny") || m.contains("lite") { return 20; }
+    // Try to extract a version number for relative ordering
+    // e.g. "gemini-2.5" > "gemini-2.0" > "gemini-1.5"
+    let version_score = m
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .filter_map(|s| s.parse::<f32>().ok())
+        .fold(0.0f32, f32::max);
+    if version_score > 0.0 { return (version_score * 10.0) as i32; }
+    50 // unknown — middle of the pack
+}
+
+/// Handles Gemini's "Please retry in 10.3s" and the JSON "retryDelay": "10s" patterns.
+fn extract_retry_delay_secs(error_body: &str) -> Option<u64> {
+    // Pattern 1: "Please retry in X.Xs" (Gemini API style)
+    if let Some(pos) = error_body.find("retry in ") {
+        let s = &error_body[pos + 9..];
+        let end = s.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(s.len());
+        if let Ok(f) = s[..end].parse::<f64>() {
+            return Some(f.ceil() as u64);
+        }
+    }
+    // Pattern 2: "retryDelay": "Xs" (Google gRPC RetryInfo style)
+    if let Some(pos) = error_body.find("retryDelay") {
+        let s = &error_body[pos..];
+        if let Some(q) = s.find('"').and_then(|i| s[i+1..].find('"').map(|j| i+1..i+1+j)) {
+            if let Ok(f) = s[q].trim_end_matches('s').parse::<f64>() {
+                return Some(f.ceil() as u64);
+            }
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -1464,6 +1681,7 @@ pub async fn ai_chat_stream(
                 super::routing_engine::Intent::CodeReview => super::model_registry::Spec::Review,
                 super::routing_engine::Intent::TestGenerate => super::model_registry::Spec::Test,
                 super::routing_engine::Intent::ScanOnly | super::routing_engine::Intent::SymbolLookup | super::routing_engine::Intent::DebugLogic => super::model_registry::Spec::Scan,
+                super::routing_engine::Intent::ExternalAgent => super::model_registry::Spec::Code,
             },
             decision.token_count,
         )
@@ -1521,6 +1739,51 @@ pub async fn ai_chat_stream(
                             content: output,
                             provider: agent.provider.clone(),
                             model: format!("{:?}", tool_id),
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cost: 0.0,
+                        });
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+
+    // External Agent route: delegate to CLI agent (claude, gemini, opencode, aider, codex, agy)
+    if let Some(ref decision) = routing_decision {
+        if decision.intent == super::routing_engine::Intent::ExternalAgent {
+            if let Some(agent_name) = &decision.external_agent {
+                let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
+                let _ = app.emit("ai:route_progress", format!("[Auto Mode] Delegating heavy task to external CLI agent: {}", agent_name));
+                
+                let cli_tool_name = format!("{}_run", agent_name);
+                let cwd = workspace_root.as_deref().unwrap_or(".");
+                
+                let tool_call = ToolCall {
+                    id: format!("ext-{}", uuid::Uuid::new_v4()),
+                    name: cli_tool_name,
+                    arguments: serde_json::json!({
+                        "prompt": prompt,
+                        "cwd": cwd,
+                        "timeout": 120
+                    }),
+                };
+                
+                let result = execute_cli_tool(&tool_call, cwd).await;
+                
+                match result {
+                    Ok(output) => {
+                        state.write_agent_log(&agent.id, &agent.name,
+                            &format!("EXTERNAL AGENT {}: returned {} chars", agent_name, output.len()));
+                        let _ = app.emit("ai:done", AiStreamDone {
+                            content: output,
+                            provider: agent.provider.clone(),
+                            model: format!("external:{}", agent_name),
                             input_tokens: 0,
                             output_tokens: 0,
                             cost: 0.0,
@@ -1598,23 +1861,67 @@ pub async fn ai_chat_stream(
 
     let mut last_error = String::new();
 
+    // ── Intra-provider model fallback list (Stage 0) ──────────────────────────
+    // When the current model fails, first try other cached_models from the SAME agent/provider
+    // before crossing to a different provider. Models sorted by capability score ascending
+    // (try cheaper/similar models first, escalate to premium on repeated failure).
+    let mut intra_model_fallback: Vec<String> = {
+        let mut others: Vec<String> = agent.cached_models.iter()
+            .filter(|m| m.as_str() != agent.model.as_str())
+            .cloned()
+            .collect();
+        // Sort ascending by capability — try next-closest model first
+        others.sort_by_key(|m| model_capability_score(m));
+        others
+    };
+    let mut intra_model_idx = 0usize;
+
+    // Universal fallback list: ALL configured agents except the current one.
+    // This runs AFTER the intra-provider + registry queues are exhausted (or in manual mode
+    // where fallback_mgr is None). Ensures 429/quota errors always try other providers.
+    let mut universal_fallback: Vec<AgentConfig> = {
+        let mut all = state.list_agents();
+        // Put the initially-selected agent's provider last so we try different providers first
+        all.sort_by(|a, b| {
+            let a_same = a.provider == agent.provider;
+            let b_same = b.provider == agent.provider;
+            a_same.cmp(&b_same)
+        });
+        all.into_iter().filter(|a| a.id != agent.id).collect()
+    };
+    let mut universal_fallback_idx = 0usize;
+
     loop {
-        // Resolve API key for current provider
-        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id) {
+        // Resolve API key: try agent.id first, then original agent_id as fallback
+        // (auto-routing may swap agent.id to a provider-agent; we try both)
+        let resolved_key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id)
+            .ok().flatten()
+            .or_else(|| {
+                if agent.id != agent_id {
+                    crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id)
+                        .ok().flatten()
+                } else {
+                    None
+                }
+            });
+
+        if let Some(real_key) = resolved_key {
             agent.api_key = Some(real_key);
-        } else if let Some(ref key) = agent.api_key {
-            if key == "********" {
-                let _ = app.emit("ai:error", AiStreamError { error: "API key is configured but not found in OS Keychain. Please re-enter the key in Settings > Agents.".to_string() });
-                return Err(format!("{}. API key not found in keychain", last_error));
-            }
+        } else if agent.api_key.as_deref() == Some("********") {
+            let msg = format!("API key for agent '{}' (provider: {}) is configured but not found in OS Keychain. Please re-enter the key in Settings > Agents.", agent.id, agent.provider);
+            let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
+            return Err(msg);
         }
 
-        let base_url = agent.base_url.clone().unwrap_or_else(|| default_base_url(&agent.provider).to_string());
+        // Resolve base URL: use agent's stored url, then provider default
+        let base_url = agent.base_url.clone()
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| default_base_url(&agent.provider).to_string());
 
         if base_url.is_empty() {
-            let msg = format!("Base URL is required for provider '{}'. Enter your endpoint URL in Settings > Agents.", agent.provider);
+            let msg = format!("No base URL configured for provider '{}' (agent: '{}'). Add this provider in Settings > Agents with your endpoint URL.", agent.provider, agent.id);
             let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
-            return Err(format!("{}. {}", last_error, msg));
+            return Err(msg);
         }
 
         // Context compression: summarize if too many messages
@@ -1670,35 +1977,122 @@ pub async fn ai_chat_stream(
                 state.write_agent_log(&agent.id, &agent.name, &format!("ERROR {}", e));
                 let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
 
-                // Try fallback with circuit breaker awareness
+                // Detect rate-limit / quota errors and extract retry delay for user feedback
+                let is_rate_limit = e.contains("429") || e.contains("RESOURCE_EXHAUSTED")
+                    || e.contains("quota") || e.contains("rate_limit") || e.contains("rate limit");
+                let retry_delay = if is_rate_limit { extract_retry_delay_secs(&e) } else { None };
+                let fail_label = if is_rate_limit {
+                    format!("Rate limit/quota on {}/{}{}",
+                        agent.provider, agent.model,
+                        retry_delay.map(|d| format!(" — retry in {}s", d)).unwrap_or_default())
+                } else {
+                    format!("{}/{} failed", agent.provider, agent.model)
+                };
+
+                // ── Stage 0: Intra-provider model fallback (same agent, cached_models) ──
+                // Try other models from the SAME provider before switching providers.
+                // E.g.: gemini-2.0-flash fails → try gemini-1.5-pro, gemini-2.5-pro, etc.
+                let mut switched_to_fallback = false;
+                while !switched_to_fallback && intra_model_idx < intra_model_fallback.len() {
+                    let next_model = intra_model_fallback[intra_model_idx].clone();
+                    intra_model_idx += 1;
+                    let prev_model = agent.model.clone();
+                    agent.model = next_model.clone();
+                    state.write_agent_log(&agent.id, &agent.name,
+                        &format!("MODEL_FALLBACK {}: {} → {}", agent.provider, prev_model, next_model));
+                    let _ = app.emit("ai:route_progress",
+                        format!("{} — switching model to {}/{}…",
+                            fail_label, agent.provider, next_model));
+                    switched_to_fallback = true;
+                }
+
+                // ── Stage 1: registry-based fallback (auto mode, same tier/spec) ─────────
                 if let Some(ref mut fm) = fallback_mgr {
                     loop {
                         if !fm.advance() { break; }
                         let Some(next) = fm.current() else { break; };
                         // Skip providers whose circuit is open
-                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
                             if !ps.is_available(&next.provider) {
                                 state.write_agent_log(&agent.id, &agent.name,
                                     &format!("SKIP {} (circuit open)", next.provider));
                                 continue;
                             }
                         }
-                        last_error = format!("{} (tried {})", e, agent.model);
+                        last_error = format!("{} (tried {}/{})", e, agent.provider, agent.model);
                         agent = resolve_fallback_agent(next, &state, &agent);
                         state.write_agent_log(&agent.id, &agent.name,
                             &format!("FALLBACK to model={}/{} (remaining: {})", agent.provider, agent.model, fm.remaining()));
                         let _ = app.emit("ai:route_progress",
-                            format!("Falling back to {}/{}...", agent.provider, agent.model));
+                            format!("Switching to {}/{}…", agent.provider, agent.model));
+                        switched_to_fallback = true;
                         break;
                     }
-                    if fm.remaining() > 0 {
-                        continue;
+                }
+
+                // ── Stage 2: universal fallback — ALL other configured agents ───────────
+                // Runs when: registry queue exhausted, manual mode (fallback_mgr=None),
+                // or any 429/quota error regardless of mode.
+                if !switched_to_fallback {
+                    while universal_fallback_idx < universal_fallback.len() {
+                        let mut next_agent = universal_fallback[universal_fallback_idx].clone();
+                        universal_fallback_idx += 1;
+
+                        // Skip if circuit breaker is open for this provider
+                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                            if !ps.is_available(&next_agent.provider) {
+                                state.write_agent_log(&agent.id, &agent.name,
+                                    &format!("UNIVERSAL_SKIP {} (circuit open)", next_agent.provider));
+                                continue;
+                            }
+                        }
+
+                        // Resolve API key for the candidate agent
+                        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(
+                            &app, &secrets_state, "codlib-ai", &next_agent.id)
+                        {
+                            next_agent.api_key = Some(real_key);
+                        }
+
+                        // Ensure base URL
+                        if next_agent.base_url.as_deref().unwrap_or("").is_empty() {
+                            let default = default_base_url(&next_agent.provider);
+                            if !default.is_empty() {
+                                next_agent.base_url = Some(default.to_string());
+                            } else {
+                                // No URL for this provider — skip
+                                state.write_agent_log(&agent.id, &agent.name,
+                                    &format!("UNIVERSAL_SKIP {} (no base URL)", next_agent.provider));
+                                continue;
+                            }
+                        }
+
+                        last_error = format!("{} (tried {}/{})", e, agent.provider, agent.model);
+                        state.write_agent_log(&agent.id, &agent.name,
+                            &format!("UNIVERSAL_FALLBACK to agent={} model={}/{}",
+                                next_agent.id, next_agent.provider, next_agent.model));
+                        let _ = app.emit("ai:route_progress",
+                            format!("Quota/error on {} — switching to {}/{}…",
+                                agent.provider, next_agent.provider, next_agent.model));
+                        agent = next_agent;
+                        switched_to_fallback = true;
+                        break;
                     }
                 }
+
+                if switched_to_fallback {
+                    continue; // retry outer loop with new agent
+                }
+
+                // ── All fallbacks exhausted ──────────────────────────────────────────────
                 if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
                     heal.report_down("providers", &format!("all fallbacks exhausted: {}", e));
                 }
-                return Err(format!("{}. No more fallbacks available.", e));
+                let _ = app.emit("ai:error", AiStreamError {
+                    error: format!("All configured providers failed or quota exhausted. Last error: {}", e)
+                });
+                return Err(format!("All providers exhausted. Last: {}", e));
+
             }
         }
     }
@@ -2913,6 +3307,7 @@ mod tests {
             model_route: Some("deepseek-r1".into()),
             reasoning_tier: super::super::model_registry::ReasoningTier::UltraHigh,
             reason: "test".into(),
+            external_agent: None,
         };
 
         let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);
@@ -3012,6 +3407,7 @@ mod tests {
             model_route: Some("gemini-2.0-flash".into()),
             reasoning_tier: super::super::model_registry::ReasoningTier::Medium,
             reason: "test".into(),
+            external_agent: None,
         };
 
         let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);

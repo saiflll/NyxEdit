@@ -4,7 +4,7 @@ mod modules;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::sync::{Arc, Mutex};
-use modules::{agent_orch, ai, cost_routing, db, fs, graph, pio, project_intel, provider_stats, proxy, pty, review, secrets, self_heal, sessions, ssh};
+use modules::{agent_orch, ai, cli, cost_routing, db, fs, graph, pio, project_intel, provider_stats, proxy, pty, review, secrets, self_heal, sessions, ssh};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -170,6 +170,10 @@ pub fn run() {
             self_heal::heal_check_startup,
             self_heal::heal_clear_crash_marker_cmd,
             self_heal::heal_set_crash_marker_cmd,
+            // CLI Discovery & Adapter commands
+            cli::cli_discover,
+            cli::cli_list,
+            cli::cli_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

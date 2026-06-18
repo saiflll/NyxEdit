@@ -28,12 +28,59 @@
   let passwordSent = $state(false);
   const bufferedOutput = new Map<string, string>();
 
+  let pendingPaste = $state<string | null>(null);
+  let pasteConfirmVisible = $state(false);
+  let contextMenu = $state<{ x: number; y: number } | null>(null);
+
   $effect(() => {
     if (sessionId) {
       activeSessionId = sessionId;
       activeTerminalSessionId.set(sessionId);
     }
   });
+
+  function triggerPaste(text: string) {
+    if (!text || !activeSessionId) return;
+    pendingPaste = text;
+    pasteConfirmVisible = true;
+  }
+
+  function confirmPaste() {
+    if (pendingPaste && activeSessionId) {
+      invoke("pty_write", { sessionId: activeSessionId, data: pendingPaste });
+    }
+    pendingPaste = null;
+    pasteConfirmVisible = false;
+  }
+
+  function cancelPaste() {
+    pendingPaste = null;
+    pasteConfirmVisible = false;
+  }
+
+  function handleCopy() {
+    if (terminal) {
+      const sel = terminal.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    }
+    contextMenu = null;
+  }
+
+  function handleSelectAll() {
+    if (terminal) terminal.selectAll();
+    contextMenu = null;
+  }
+
+  function handleContextPaste() {
+    contextMenu = null;
+    navigator.clipboard.readText().then((text) => {
+      if (text) triggerPaste(text);
+    }).catch(() => {});
+  }
+
+  function closeContextMenu() {
+    contextMenu = null;
+  }
 
   onMount(async () => {
     const { Terminal } = await import("xterm");
@@ -124,7 +171,6 @@
       }
     }
 
-    // Dynamic resize observer with 30ms debounce & safe bounds checks to prevent UI freezing
     let resizeTimeout: any = null;
     resizeObserver = new ResizeObserver(() => {
       if (resizeTimeout) clearTimeout(resizeTimeout);
@@ -146,7 +192,6 @@
     });
     resizeObserver.observe(terminalEl);
 
-    // Initial fit
     setTimeout(() => {
       if (
         fitAddon &&
@@ -160,7 +205,6 @@
       }
     }, 100);
 
-    // Live theme update when CSS variables change
     function updateTermTheme() {
       if (!terminal) return;
       const st = getComputedStyle(document.documentElement);
@@ -206,11 +250,19 @@
 
     let currentLine = "";
     terminal.onData((data: string) => {
+      if (pasteConfirmVisible) {
+        if (data === "\r" || data === "\n") {
+          confirmPaste();
+        } else if (data === "\x1b" || data === "\x03") {
+          cancelPaste();
+        }
+        return;
+      }
+
       if (activeSessionId) {
         invoke("pty_write", { sessionId: activeSessionId, data });
       }
 
-      // Track input line buffer to parse navigation commands
       for (let i = 0; i < data.length; i++) {
         const char = data[i];
         if (char === "\r" || char === "\n") {
@@ -230,6 +282,36 @@
       if (activeSessionId) {
         invoke("pty_resize", { sessionId: activeSessionId, rows, cols });
       }
+    });
+
+    terminal.attachCustomKeyEventHandler((e: { event: KeyboardEvent; type: string }) => {
+      const { event } = e;
+      const isPaste =
+        ((event.ctrlKey || event.metaKey) && event.key === "v") ||
+        (event.shiftKey && event.key === "Insert");
+      if (isPaste) {
+        navigator.clipboard.readText().then((text) => {
+          if (text) triggerPaste(text);
+        }).catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
+    terminalEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      contextMenu = { x: e.clientX, y: e.clientY };
+    });
+
+    terminalEl.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = e.clipboardData?.getData("text/plain");
+      if (text) triggerPaste(text);
+    });
+
+    document.addEventListener("click", closeContextMenu);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeContextMenu();
     });
   });
 
@@ -262,7 +344,6 @@
       bufferedOutput.delete(id);
     }
 
-    // Force size calculation once PTY is activated
     setTimeout(() => {
       if (fitAddon) {
         try {
@@ -300,6 +381,55 @@
   }}
 >
   <div bind:this={terminalEl} class="term-instance"></div>
+
+  {#if pasteConfirmVisible}
+    <div class="paste-confirm" role="alert" onclick={confirmPaste}>
+      <svg class="pc-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+        <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+        <rect x="10" y="9" width="4" height="4" rx="1"/>
+      </svg>
+      <span class="pc-label">Paste ~{pendingPaste?.split('\n').length || 0} lines</span>
+      <span class="pc-hint">
+        <span class="pc-key">Enter</span> confirm
+        <span class="pc-key">Esc</span> cancel
+      </span>
+    </div>
+  {/if}
+
+  {#if contextMenu}
+    <div
+      class="ctx-menu"
+      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+      onclick={(e) => e.stopPropagation()}
+      role="menu"
+    >
+      <button class="ctx-item" role="menuitem" onclick={handleCopy}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy
+      </button>
+      <button class="ctx-item" role="menuitem" onclick={handleContextPaste}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+          <rect x="10" y="9" width="4" height="4" rx="1"/>
+        </svg>
+        Paste
+      </button>
+      <div class="ctx-divider" role="separator"></div>
+      <button class="ctx-item" role="menuitem" onclick={handleSelectAll}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+          <line x1="9" y1="3" x2="9" y2="21"/>
+          <line x1="15" y1="3" x2="15" y2="21"/>
+        </svg>
+        Select All
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -311,6 +441,7 @@
     overflow: hidden;
     border: 1px solid var(--border-primary);
     transition: border-color 0.2s;
+    position: relative;
   }
   .term:focus-within {
     border-color: var(--accent-blue);
@@ -326,5 +457,103 @@
   .term :global(.xterm-viewport) {
     scrollbar-width: thin;
     scrollbar-color: var(--accent-blue) transparent;
+  }
+
+  .paste-confirm {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px;
+    background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-elevated));
+    border: 1px solid var(--accent-blue);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+    white-space: nowrap;
+    user-select: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+  .paste-confirm:hover {
+    background: color-mix(in srgb, var(--accent-blue) 20%, var(--bg-elevated));
+    border-color: var(--accent-cyan);
+  }
+  .pc-icon {
+    color: var(--accent-blue);
+    flex-shrink: 0;
+  }
+  .pc-label {
+    font-size: var(--font-size, 12px);
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: 0.02em;
+  }
+  .pc-hint {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .pc-key {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 4px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    line-height: 1;
+  }
+
+  .ctx-menu {
+    position: fixed;
+    z-index: 1000;
+    min-width: 150px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    backdrop-filter: blur(12px);
+    overflow: hidden;
+  }
+  .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-size: var(--font-size, 12px);
+    cursor: pointer;
+    transition: background 0.08s ease;
+    text-align: left;
+    line-height: 1;
+  }
+  .ctx-item:hover {
+    background: var(--bg-hover);
+  }
+  .ctx-item svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+  .ctx-divider {
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--border-primary);
   }
 </style>

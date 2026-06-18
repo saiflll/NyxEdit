@@ -22,6 +22,7 @@ pub enum Intent {
     TestGenerate,
     ScanOnly,
     SymbolLookup,
+    ExternalAgent,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub struct RouteDecision {
     pub model_route: Option<String>, // Model ID
     pub reasoning_tier: ReasoningTier,
     pub reason: String,
+    pub external_agent: Option<String>, // e.g., "claude", "gemini", "opencode", "aider", "codex", "agy"
 }
 
 pub struct RoutingEngine {
@@ -121,6 +123,11 @@ impl RoutingEngine {
             return Intent::CodeWrite;
         }
 
+        // External agent triggers (heavy task delegation to CLI agents)
+        if lower.contains("use claude") || lower.contains("pakai claude") || lower.contains("delegate to") || lower.contains("serahkan ke") || lower.contains("call opencode") || lower.contains("panggil opencode") || lower.contains("run aider") || lower.contains("jalankan aider") {
+            return Intent::ExternalAgent;
+        }
+
         // Default simple explain
         Intent::ExplainSimple
     }
@@ -161,10 +168,31 @@ impl RoutingEngine {
 
         // Step 1: Tool-first routing
         let mut tool_route = None;
+        let mut external_agent = None;
+        
         if intent == Intent::SymbolLookup {
             tool_route = Some(ToolId::TreeSitter);
         } else if intent == Intent::ScanOnly {
             tool_route = Some(ToolId::Ripgrep);
+        } else if intent == Intent::ExternalAgent {
+            // Determine which external CLI agent to use based on keywords
+            let lower = text.to_lowercase();
+            if lower.contains("claude") {
+                external_agent = Some("claude".to_string());
+            } else if lower.contains("gemini") {
+                external_agent = Some("gemini".to_string());
+            } else if lower.contains("opencode") {
+                external_agent = Some("opencode".to_string());
+            } else if lower.contains("aider") {
+                external_agent = Some("aider".to_string());
+            } else if lower.contains("codex") {
+                external_agent = Some("codex".to_string());
+            } else if lower.contains("agy") {
+                external_agent = Some("agy".to_string());
+            } else {
+                // Default to claude for heavy tasks
+                external_agent = Some("claude".to_string());
+            }
         }
 
         // Step 2: Determine reasoning tier
@@ -173,6 +201,7 @@ impl RoutingEngine {
             Intent::CodeWrite | Intent::TestGenerate => ReasoningTier::High,
             Intent::CodeReview | Intent::DebugLogic | Intent::RefactorFull | Intent::ArchDesign => ReasoningTier::UltraHigh,
             Intent::ScanOnly | Intent::SymbolLookup => ReasoningTier::Medium,
+            Intent::ExternalAgent => ReasoningTier::UltraHigh,
         };
 
         // Step 3: Select specialized model spec
@@ -182,21 +211,24 @@ impl RoutingEngine {
             Intent::CodeReview => Spec::Review,
             Intent::TestGenerate => Spec::Test,
             Intent::ScanOnly | Intent::SymbolLookup | Intent::DebugLogic => Spec::Scan,
+            Intent::ExternalAgent => Spec::Code,
         };
 
         // Step 4: Capability-based model routing
         let model = self.model_registry.select_model(reasoning_tier.clone(), spec, token_count);
         let model_route = model.map(|m| m.id.clone());
 
-        let reason = match &tool_route {
-            Some(tool) => format!("Routed to deterministic tool: {:?}.", tool),
-            None => match &model_route {
-                Some(model_id) => format!(
-                    "Routed to model '{}' based on tier {:?}, spec {:?}, and context size ({} tokens).",
-                    model_id, reasoning_tier, spec, token_count
-                ),
-                None => "No suitable model found in registry, falling back to default agent model.".to_string(),
-            }
+        let reason = if let Some(agent) = &external_agent {
+            format!("Routed to external CLI agent '{}' for heavy task delegation.", agent)
+        } else if let Some(tool) = &tool_route {
+            format!("Routed to deterministic tool: {:?}.", tool)
+        } else if let Some(model_id) = &model_route {
+            format!(
+                "Routed to model '{}' based on tier {:?}, spec {:?}, and context size ({} tokens).",
+                model_id, reasoning_tier, spec, token_count
+            )
+        } else {
+            "No suitable model found in registry, falling back to default agent model.".to_string()
         };
 
         RouteDecision {
@@ -208,6 +240,7 @@ impl RoutingEngine {
             model_route,
             reasoning_tier,
             reason,
+            external_agent,
         }
     }
 

@@ -26,4 +26,9 @@ pub mod agent_orch;
 pub mod self_heal;
 pub mod context;
 pub mod cost_routing;
+pub mod router;
+pub mod provider;
+pub mod executor;
+pub mod handoff;
+pub mod cli;
 

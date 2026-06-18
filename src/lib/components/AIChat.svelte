@@ -114,24 +114,40 @@
 
   function getMsgBadges(msg: ChatMessage, isLast: boolean) {
     if (msg.role !== "assistant") return null;
-    
+
+    // New typed metadata: stamped by ai:done event
+    if (msg.provider_used || msg.model_used) {
+      const isAutoMsg = msg.content.startsWith("[Auto ");
+      const tierMatch = msg.content.match(/^\[Auto \[([a-z]+)\]/);
+      return {
+        isAuto: isAutoMsg,
+        tier: tierMatch ? tierMatch[1] : null,
+        model: msg.model_used || "",
+        provider: msg.provider_used || "",
+      };
+    }
+
+    // Streaming: use live state
     if (isLast && isStreaming) {
       return {
         isAuto: selectedMode === "auto",
         tier: selectedMode === "auto" ? currentAutoTier : null,
-        model: streamingAgent ? streamingAgent.replace(/^Auto \[[a-z]+\] /, '') : ""
+        model: streamingAgent ? streamingAgent.replace(/^Auto \[[a-z]+\] /, '') : "",
+        provider: "",
       };
     }
-    
+
+    // Legacy: parse from message content prefix
     const meta = parseMessageMeta(msg.content);
     if (meta.model) {
       return {
         isAuto: meta.isAuto,
         tier: meta.isAuto ? meta.tier : null,
-        model: meta.model
+        model: meta.model,
+        provider: "",
       };
     }
-    
+
     return null;
   }
 
@@ -248,6 +264,26 @@
     }
     const sortedKeys = Array.from(map.keys()).sort((a, b) => a - b);
     return sortedKeys.map(k => map.get(k) || []);
+  });
+
+  let processingStatus = $derived.by(() => {
+    if (chainSteps.length > 0) {
+      const active = chainSteps.find(s => s.status === "active");
+      if (active) return active.label || `Step ${active.index}`;
+      const done = chainSteps.filter(s => s.status === "completed").length;
+      const total = chainSteps.length;
+      if (done > 0 && done < total) return `Step ${done + 1}/${total}`;
+      return null;
+    }
+    if (dagNodes.length > 0) {
+      const active = dagNodes.find(n => n.status === "active");
+      if (active) return active.label;
+      const done = dagNodes.filter(n => n.status === "completed").length;
+      const total = dagNodes.length;
+      if (done > 0 && done < total) return `${done}/${total} tasks`;
+      return null;
+    }
+    return null;
   });
 
   let pendingPermission = $state<{ id: string; command: string; cwd: string } | null>(null);
@@ -547,14 +583,21 @@
       const p = e.payload;
       if (chainSteps.length > 0) {
         chainSteps = chainSteps.map(s => ({ ...s, status: "completed" as const }));
-        setTimeout(() => { chainSteps = []; }, 2000);
+        chainSteps = [];
       }
       if (dagNodes.length > 0) {
         dagNodes = dagNodes.map(n => ({ ...n, status: "completed" as const }));
-        setTimeout(() => { dagNodes = []; }, 2000);
+        dagNodes = [];
       }
+      // Build content prefix for legacy compat (parseMessageMeta still works)
       const prefix = streamingAgent ? `[${streamingAgent}]` : `[${p.provider}/${p.model}]`;
-      messages[messages.length - 1] = { role: "assistant", content: prefix + "\n" + p.content };
+      messages[messages.length - 1] = {
+        role: "assistant",
+        content: prefix + "\n" + p.content,
+        // Typed metadata for per-message model display in history
+        provider_used: p.provider,
+        model_used: p.model,
+      };
       messages = [...messages];
       isStreaming = false;
       streamingAgent = "";
@@ -567,11 +610,11 @@
     unlistenError = await listen<{error: string}>("ai:error", async (e) => {
       if (chainSteps.length > 0) {
         chainSteps = chainSteps.map(s => ({ ...s, status: "error" as const }));
-        setTimeout(() => { chainSteps = []; }, 3000);
+        chainSteps = [];
       }
       if (dagNodes.length > 0) {
         dagNodes = dagNodes.map(n => n.status === "active" ? { ...n, status: "error" as const } : n);
-        setTimeout(() => { dagNodes = []; }, 3000);
+        dagNodes = [];
       }
       cleanup();
       messages = messages.slice(0, -1);
@@ -1040,7 +1083,7 @@
                     <span class="mode-badge manual-badge" style="font-size: var(--fs-9); padding: 2px 6px; border-radius: 4px; background: var(--bg-hover); color: var(--text-secondary); font-weight: 600;">Manual</span>
                   {/if}
                   {#if badges.model}
-                    <span class="model-badge" style="font-size: var(--fs-9); padding: 2px 6px; border-radius: 4px; background: var(--bg-primary); border: 1px solid var(--border-subtle); color: var(--text-muted); font-family: monospace;">{badges.model.split('/').pop()}</span>
+                    <span class="model-badge" title="{badges.provider ? badges.provider + '/' : ''}{badges.model}" style="font-size: var(--fs-9); padding: 2px 6px; border-radius: 4px; background: var(--bg-primary); border: 1px solid var(--border-subtle); color: var(--text-muted); font-family: monospace; cursor: default;">{badges.model.split('/').pop()}</span>
                   {/if}
                 {/if}
               </div>
@@ -1094,57 +1137,10 @@
       </button>
     {/if}
 
-    {#if chainSteps.length > 0}
-      <div class="chain-progress">
-        {#each chainSteps as step}
-          <div class="chain-step" class:chain-step-active={step.status === "active"} class:chain-step-done={step.status === "completed"} class:chain-step-error={step.status === "error"}>
-            <div class="chain-step-icon">
-              {#if step.status === "completed"}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
-              {:else if step.status === "error"}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="3"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-              {:else if step.status === "active"}
-                <span class="chain-step-spinner"></span>
-              {:else}
-                <span class="chain-step-dot"></span>
-              {/if}
-            </div>
-            <span class="chain-step-label">{step.label || `Step ${step.index}`}</span>
-            {#if step.index > 0 && step.index < chainSteps.length}
-              <div class="chain-step-line" class:chain-step-line-done={step.status === "completed"}></div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    {/if}
-
-    {#if dagNodes.length > 0}
-      <div class="dag-progress">
-        {#each dagLevels as level, levelIdx}
-          <div class="dag-level">
-            {#each level as node}
-              <div class="dag-node" class:dag-node-active={node.status === "active"} class:dag-node-done={node.status === "completed"} class:dag-node-error={node.status === "error"}>
-                <div class="dag-node-icon">
-                  {#if node.status === "completed"}
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
-                  {:else if node.status === "error"}
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--accent-red)" stroke-width="3.5"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-                  {:else if node.status === "active"}
-                    <span class="dag-node-spinner"></span>
-                  {:else}
-                    <span class="dag-node-dot"></span>
-                  {/if}
-                </div>
-                <span class="dag-node-label">{node.label}</span>
-              </div>
-            {/each}
-          </div>
-          {#if levelIdx < dagLevels.length - 1}
-            <div class="dag-level-connector">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
-          {/if}
-        {/each}
+    {#if processingStatus}
+      <div class="ai-proc">
+        <div class="ai-proc-bar"></div>
+        <div class="ai-proc-label">{processingStatus}</div>
       </div>
     {/if}
 
@@ -1308,20 +1304,11 @@
   .md-content :global(img) { max-width:100%; border-radius:4px; margin:2px 0; }
   .md-content :global(hr) { border:none; border-top:1px solid var(--border-subtle); margin:4px 0; }
 
-  /* ─── Chain Progress ─── */
-  .chain-progress { display:flex; align-items:center; gap:0; padding:6px 10px; border-top:1px solid var(--border-subtle); background:var(--bg-surface); flex-shrink:0; overflow-x:auto; }
-  .chain-step { display:flex; align-items:center; gap:4px; white-space:nowrap; flex-shrink:0; }
-  .chain-step-icon { width:18px; height:18px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-  .chain-step-spinner { width:8px; height:8px; border:2px solid var(--accent-blue); border-top-color:transparent; border-radius:50%; animation:spin 0.6s linear infinite; }
-  .chain-step-dot { width:6px; height:6px; border-radius:50%; background:var(--text-muted); opacity:0.3; }
-  .chain-step-done .chain-step-dot { background:var(--accent-green); opacity:1; }
-  .chain-step-label { font-size:var(--fs-10); color:var(--text-muted); }
-  .chain-step-active .chain-step-label { color:var(--accent-blue); font-weight:600; }
-  .chain-step-done .chain-step-label { color:var(--accent-green); }
-  .chain-step-error .chain-step-label { color:var(--accent-red); }
-  .chain-step-line { width:16px; height:1px; background:var(--border-subtle); margin:0 2px; flex-shrink:0; }
-  .chain-step-line-done { background:var(--accent-green); }
-  @keyframes spin { to { transform:rotate(360deg); } }
+  /* ─── Processing Bar (compact) ─── */
+  .ai-proc { flex-shrink:0; border-top:1px solid var(--border-subtle); background:var(--bg-surface); overflow:hidden; }
+  .ai-proc-bar { height:2px; background:linear-gradient(90deg, var(--border-subtle) 0%, var(--text-muted) 40%, var(--border-subtle) 80%); background-size:200% 100%; animation:procShimmer 1.4s linear infinite; }
+  .ai-proc-label { font-size:var(--fs-9); color:var(--text-muted); padding:3px 10px 4px; line-height:1.2; letter-spacing:0.02em; }
+  @keyframes procShimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
 
   .permission-panel {
     margin: 8px 10px;
@@ -1381,95 +1368,5 @@
   .perm-accept { background: var(--accent-blue); color: var(--bg-primary); }
   .perm-accept:hover { filter: brightness(1.15); }
 
-  /* ─── DAG Progress ─── */
-  .dag-progress {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--border-subtle);
-    background: var(--bg-surface);
-    flex-shrink: 0;
-    overflow-x: auto;
-  }
-  .dag-level {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 4px;
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.03);
-  }
-  .dag-node {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-subtle);
-    white-space: nowrap;
-    transition: all 0.15s ease;
-  }
-  .dag-node:hover {
-    border-color: var(--border-primary);
-  }
-  .dag-node-icon {
-    width: 14px;
-    height: 14px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-  .dag-node-spinner {
-    width: 8px;
-    height: 8px;
-    border: 1.5px solid var(--accent-blue);
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-  .dag-node-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    opacity: 0.3;
-  }
-  .dag-node-done {
-    border-color: var(--accent-green) !important;
-    background: color-mix(in srgb, var(--accent-green) 5%, var(--bg-primary));
-  }
-  .dag-node-done .dag-node-label {
-    color: var(--accent-green);
-  }
-  .dag-node-active {
-    border-color: var(--accent-blue) !important;
-    box-shadow: 0 0 8px rgba(0, 122, 255, 0.15);
-  }
-  .dag-node-active .dag-node-label {
-    color: var(--accent-blue);
-    font-weight: 600;
-  }
-  .dag-node-error {
-    border-color: var(--accent-red) !important;
-    background: color-mix(in srgb, var(--accent-red) 5%, var(--bg-primary));
-  }
-  .dag-node-error .dag-node-label {
-    color: var(--accent-red);
-  }
-  .dag-node-label {
-    font-size: var(--fs-10);
-    color: var(--text-muted);
-  }
-  .dag-level-connector {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    opacity: 0.5;
-    flex-shrink: 0;
-  }
+
 </style>
