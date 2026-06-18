@@ -125,6 +125,9 @@ pub struct DagStepResult {
     pub output: String,
     pub success: bool,
     pub error: Option<String>,
+    /// Real token counts from the LLM call (0 if failed or unavailable)
+    pub inp_tokens: u64,
+    pub out_tokens: u64,
 }
 
 impl DagPlan {

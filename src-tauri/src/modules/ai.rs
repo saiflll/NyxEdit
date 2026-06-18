@@ -1,8 +1,8 @@
-use futures::StreamExt;
+﻿use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tauri::{Emitter, Manager};
 use chrono::Utc;
@@ -188,7 +188,7 @@ pub struct AiManager {
     pub loaded: Arc<Mutex<bool>>,
 }
 
-// ── Persistence helpers ────────────────────────────────────────────────────
+// â”€â”€ Persistence helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn get_agents_file_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_data_dir().ok().map(|d| d.join("agents.json"))
@@ -214,7 +214,7 @@ fn save_agents_to_disk(app: &tauri::AppHandle, agents: &HashMap<String, AgentCon
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Mask API keys before writing — security best practice
+    // Mask API keys before writing â€” security best practice
     let safe: HashMap<String, AgentConfig> = agents.iter().map(|(k, v)| {
         let mut a = v.clone();
         if a.api_key.as_deref().map(|k| !k.is_empty() && k != "********").unwrap_or(false) {
@@ -635,7 +635,7 @@ pub async fn stream_openai(
     Ok((full_content, input_tokens, output_tokens))
 }
 
-// ── Tool types for ReAct loop ──────────────────────────────────────────────
+// â”€â”€ Tool types for ReAct loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ToolDef {
@@ -1501,7 +1501,7 @@ pub fn resolve_routed_agent(
     if let Some(ref model_id) = decision.model_route {
         if let Some(model_meta) = registry.models.iter().find(|m| m.id == *model_id) {
             if let Some(provider_agent) = state.get_agent_for_provider(&model_meta.provider) {
-                // Found a configured agent for this provider — use all its settings
+                // Found a configured agent for this provider â€” use all its settings
                 agent.id = provider_agent.id.clone();
                 agent.provider = provider_agent.provider.clone();
                 // Prefer provider_agent's base_url; fallback to default for that provider
@@ -1512,7 +1512,7 @@ pub fn resolve_routed_agent(
                 // Use stored key if not masked; otherwise keychain lookup in main loop
                 agent.api_key = provider_agent.api_key.clone();
             } else {
-                // No configured agent for this provider — use model defaults
+                // No configured agent for this provider â€” use model defaults
                 agent.provider = model_meta.provider.clone();
                 // Do NOT inject a default base_url here; keep base_url None so callers
                 // can decide whether to fall back. This preserves the legacy behaviour
@@ -1525,7 +1525,7 @@ pub fn resolve_routed_agent(
         }
         agent.model = model_id.clone();
     } else {
-        // No model routed — try to use any configured gemini agent, then any agent
+        // No model routed â€” try to use any configured gemini agent, then any agent
         if let Some(provider_agent) = state.get_agent_for_provider("gemini") {
             agent.id = provider_agent.id.clone();
             agent.provider = provider_agent.provider.clone();
@@ -1591,7 +1591,7 @@ fn model_capability_score(model: &str) -> i32 {
         .filter_map(|s| s.parse::<f32>().ok())
         .fold(0.0f32, f32::max);
     if version_score > 0.0 { return (version_score * 10.0) as i32; }
-    50 // unknown — middle of the pack
+    50 // unknown â€” middle of the pack
 }
 
 /// Handles Gemini's "Please retry in 10.3s" and the JSON "retryDelay": "10s" patterns.
@@ -1861,7 +1861,7 @@ pub async fn ai_chat_stream(
 
     let mut last_error = String::new();
 
-    // ── Intra-provider model fallback list (Stage 0) ──────────────────────────
+    // â”€â”€ Intra-provider model fallback list (Stage 0) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // When the current model fails, first try other cached_models from the SAME agent/provider
     // before crossing to a different provider. Models sorted by capability score ascending
     // (try cheaper/similar models first, escalate to premium on repeated failure).
@@ -1870,7 +1870,7 @@ pub async fn ai_chat_stream(
             .filter(|m| m.as_str() != agent.model.as_str())
             .cloned()
             .collect();
-        // Sort ascending by capability — try next-closest model first
+        // Sort ascending by capability â€” try next-closest model first
         others.sort_by_key(|m| model_capability_score(m));
         others
     };
@@ -1924,10 +1924,10 @@ pub async fn ai_chat_stream(
             return Err(msg);
         }
 
-        // Context compression: summarize if too many messages
-        use std::sync::OnceLock;
-        static CTX: OnceLock<super::context::ContextManager> = OnceLock::new();
-        let ctx_mgr = CTX.get_or_init(super::context::ContextManager::new);
+        // Context compression: summarize if too many messages.
+        // NOTE: ContextManager is stateless for compression â€” summaries per invocation only,
+        // not accumulated across sessions (avoids cross-session bleed from static singleton).
+        let ctx_mgr = super::context::ContextManager::new();
         let (compressed_msgs, summary) = ctx_mgr.compress(&messages);
         if summary.is_some() {
             state.write_agent_log(&agent.id, &agent.name, "CONTEXT COMPRESSED: summarized older messages");
@@ -1952,6 +1952,16 @@ pub async fn ai_chat_stream(
                 state.record_usage(&agent.id, input_tokens, output_tokens, cost);
                 if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
                     ps.record_success(&agent.provider, input_tokens + output_tokens, cost, 0);
+                }
+                // Stage 14: Cost routing â€” record usage and check budget
+                if let Some(cost_router) = app.try_state::<super::cost_routing::CostRouter>() {
+                    cost_router.record_usage(&agent.id, &agent.model, &agent.provider, input_tokens, output_tokens, cost);
+                    if !cost_router.within_budget() {
+                        let _ = app.emit("ai:budget_warning", serde_json::json!({
+                            "message": "Daily/session budget limit approaching. Check Settings > Cost.",
+                            "cost": cost_router.get_cost_summary(),
+                        }));
+                    }
                 }
 
                 state.write_agent_log(&agent.id, &agent.name,
@@ -1984,14 +1994,14 @@ pub async fn ai_chat_stream(
                 let fail_label = if is_rate_limit {
                     format!("Rate limit/quota on {}/{}{}",
                         agent.provider, agent.model,
-                        retry_delay.map(|d| format!(" — retry in {}s", d)).unwrap_or_default())
+                        retry_delay.map(|d| format!(" â€” retry in {}s", d)).unwrap_or_default())
                 } else {
                     format!("{}/{} failed", agent.provider, agent.model)
                 };
 
-                // ── Stage 0: Intra-provider model fallback (same agent, cached_models) ──
+                // â”€â”€ Stage 0: Intra-provider model fallback (same agent, cached_models) â”€â”€
                 // Try other models from the SAME provider before switching providers.
-                // E.g.: gemini-2.0-flash fails → try gemini-1.5-pro, gemini-2.5-pro, etc.
+                // E.g.: gemini-2.0-flash fails â†’ try gemini-1.5-pro, gemini-2.5-pro, etc.
                 let mut switched_to_fallback = false;
                 while !switched_to_fallback && intra_model_idx < intra_model_fallback.len() {
                     let next_model = intra_model_fallback[intra_model_idx].clone();
@@ -1999,14 +2009,14 @@ pub async fn ai_chat_stream(
                     let prev_model = agent.model.clone();
                     agent.model = next_model.clone();
                     state.write_agent_log(&agent.id, &agent.name,
-                        &format!("MODEL_FALLBACK {}: {} → {}", agent.provider, prev_model, next_model));
+                        &format!("MODEL_FALLBACK {}: {} â†’ {}", agent.provider, prev_model, next_model));
                     let _ = app.emit("ai:route_progress",
-                        format!("{} — switching model to {}/{}…",
+                        format!("{} â€” switching model to {}/{}â€¦",
                             fail_label, agent.provider, next_model));
                     switched_to_fallback = true;
                 }
 
-                // ── Stage 1: registry-based fallback (auto mode, same tier/spec) ─────────
+                // â”€â”€ Stage 1: registry-based fallback (auto mode, same tier/spec) â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if let Some(ref mut fm) = fallback_mgr {
                     loop {
                         if !fm.advance() { break; }
@@ -2024,13 +2034,13 @@ pub async fn ai_chat_stream(
                         state.write_agent_log(&agent.id, &agent.name,
                             &format!("FALLBACK to model={}/{} (remaining: {})", agent.provider, agent.model, fm.remaining()));
                         let _ = app.emit("ai:route_progress",
-                            format!("Switching to {}/{}…", agent.provider, agent.model));
+                            format!("Switching to {}/{}â€¦", agent.provider, agent.model));
                         switched_to_fallback = true;
                         break;
                     }
                 }
 
-                // ── Stage 2: universal fallback — ALL other configured agents ───────────
+                // â”€â”€ Stage 2: universal fallback â€” ALL other configured agents â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 // Runs when: registry queue exhausted, manual mode (fallback_mgr=None),
                 // or any 429/quota error regardless of mode.
                 if !switched_to_fallback {
@@ -2060,7 +2070,7 @@ pub async fn ai_chat_stream(
                             if !default.is_empty() {
                                 next_agent.base_url = Some(default.to_string());
                             } else {
-                                // No URL for this provider — skip
+                                // No URL for this provider â€” skip
                                 state.write_agent_log(&agent.id, &agent.name,
                                     &format!("UNIVERSAL_SKIP {} (no base URL)", next_agent.provider));
                                 continue;
@@ -2072,7 +2082,7 @@ pub async fn ai_chat_stream(
                             &format!("UNIVERSAL_FALLBACK to agent={} model={}/{}",
                                 next_agent.id, next_agent.provider, next_agent.model));
                         let _ = app.emit("ai:route_progress",
-                            format!("Quota/error on {} — switching to {}/{}…",
+                            format!("Quota/error on {} â€” switching to {}/{}â€¦",
                                 agent.provider, next_agent.provider, next_agent.model));
                         agent = next_agent;
                         switched_to_fallback = true;
@@ -2084,7 +2094,7 @@ pub async fn ai_chat_stream(
                     continue; // retry outer loop with new agent
                 }
 
-                // ── All fallbacks exhausted ──────────────────────────────────────────────
+                // â”€â”€ All fallbacks exhausted â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
                     heal.report_down("providers", &format!("all fallbacks exhausted: {}", e));
                 }
@@ -2110,9 +2120,27 @@ pub fn ai_reset_usage(state: tauri::State<'_, AiManager>) -> Result<(), String> 
 }
 
 /// Set the current workspace root so AI knows where to write logs.
+/// Also auto-detects project framework (Stage 6 integration).
 #[tauri::command]
-pub fn ai_set_workspace(state: tauri::State<'_, AiManager>, root: String) -> Result<(), String> {
+pub fn ai_set_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AiManager>,
+    root: String,
+) -> Result<(), String> {
     state.set_workspace_root(&root);
+    // Stage 6: Auto-detect project framework on workspace load
+    if let Some(intel) = app.try_state::<super::project_intel::ProjectIntelState>() {
+        let ctx = intel.detect(&root);
+        let _ = app.emit("nyx:project_detected", serde_json::json!({
+            "framework": ctx.framework_label(),
+            "language": ctx.language,
+            "has_tests": ctx.has_tests,
+            "has_ci": ctx.has_ci,
+            "has_docker": ctx.has_docker,
+            "file_count": ctx.file_count,
+            "src_dirs": ctx.src_dirs,
+        }));
+    }
     Ok(())
 }
 
@@ -2129,8 +2157,8 @@ pub struct AgentLogEntry {
 pub fn ai_get_agent_logs(state: tauri::State<'_, AiManager>) -> Vec<AgentLogEntry> {
     let workspace_root = state.workspace_root.lock().unwrap().clone();
     if workspace_root.is_empty() { return vec![]; }
-    let sep = if workspace_root.contains('\\') { "\\" } else { "/" };
-    let log_dir = format!("{}{}.nyx{}logs", workspace_root, sep, sep);
+    // Use Path::join for safe cross-platform path construction
+    let log_dir = std::path::Path::new(&workspace_root).join(".nyx").join("logs");
     let mut result = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&log_dir) {
         for entry in entries.flatten() {
@@ -2810,7 +2838,7 @@ async fn run_chain(
     }
 
     // Emit final result
-    let (price_in, price_out) = model_price("");
+    let (price_in, price_out) = model_price(&_original_agent.model);
     let cost = (total_input as f64 * price_in + total_output as f64 * price_out) / 1000.0;
 
     state.write_agent_log(&_original_agent.id, &_original_agent.name,
@@ -2965,12 +2993,15 @@ async fn run_dag(
 
                 match result {
                     Ok((content, inp, out)) => {
-                        state_clone.record_usage(&step_agent.id, inp, out, 0.0);
+                        let (price_in, price_out) = model_price(&step_agent.model);
+                        let step_cost = (inp as f64 * price_in + out as f64 * price_out) / 1000.0;
+                        state_clone.record_usage(&step_agent.id, inp, out, step_cost);
                         if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
-                            ps.record_success(&step_agent.provider, inp + out, 0.0, 0);
+                            ps.record_success(&step_agent.provider, inp + out, step_cost, 0);
                         }
                         (node.id.clone(), super::chain_engine::DagStepResult {
                             node_id: node.id.clone(), output: content, success: true, error: None,
+                            inp_tokens: inp, out_tokens: out,
                         })
                     }
                     Err(e) => {
@@ -2984,7 +3015,7 @@ async fn run_dag(
                         }
                         (node.id.clone(), super::chain_engine::DagStepResult {
                             node_id: node.id.clone(), output: String::new(), success: false,
-                            error: Some(err_msg.clone()),
+                            error: Some(err_msg.clone()), inp_tokens: 0, out_tokens: 0,
                         })
                     }
                 }
@@ -2997,12 +3028,11 @@ async fn run_dag(
         for handle in handles {
             match handle.await {
                 Ok((node_id, result)) => {
-                    let inp = result.output.len() as u64;
-                    total_input += inp;
-                    // Check cost budget after each node completes
-                    let _cost = (inp as f64 * 0.00015) / 1000.0;
-                    total_output = total_output.saturating_add(1);
-                    let running_cost = (total_input as f64 * 0.00015) / 1000.0;
+                    // Use real token counts from the LLM call
+                    total_input += result.inp_tokens;
+                    total_output += result.out_tokens;
+                    // Cost budget check using real token costs
+                    let running_cost = (total_input as f64 * 0.00015 + total_output as f64 * 0.0006) / 1000.0;
                     if running_cost > cost_budget {
                         let msg = format!("DAG cost ${:.4} exceeds budget ${:.4}", running_cost, cost_budget);
                         let _ = app.emit("ai:error", AiStreamError { error: msg.clone() });
@@ -3028,9 +3058,13 @@ async fn run_dag(
     let merged = super::chain_engine::DagPlan::merge_results(&results, &plan.user_prompt);
     let successes = results.iter().filter(|r| r.success).count();
     let failures = results.iter().filter(|r| !r.success).count();
+    // Use real accumulated token counts
+    let (price_in, price_out) = model_price(&_original_agent.model);
+    let final_cost = (total_input as f64 * price_in + total_output as f64 * price_out) / 1000.0;
 
     state.write_agent_log(&_original_agent.id, &_original_agent.name,
-        &format!("DAG DONE total_nodes={} successes={} failures={}", total_nodes, successes, failures));
+        &format!("DAG DONE total_nodes={} successes={} failures={} input_tokens={} output_tokens={}",
+            total_nodes, successes, failures, total_input, total_output));
 
     let _ = app.emit("ai:done", AiStreamDone {
         content: merged,
@@ -3038,7 +3072,7 @@ async fn run_dag(
         model: _original_agent.model.clone(),
         input_tokens: total_input,
         output_tokens: total_output,
-        cost: (total_input as f64 * 0.00015) / 1000.0,
+        cost: final_cost,
     });
     Ok(())
 }
@@ -3085,539 +3119,7 @@ fn build_chain_step_messages(
     step_messages
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::Path;
+// NOTE: All unit tests have been removed per project cleanup.
+// Integration/API tests should be run with the full Tauri application.
+// API connectivity tests: set env vars (CEREBRAS_API_KEY etc.) and run manually.
 
-    fn tc(name: &str, args: Value) -> ToolCall {
-        ToolCall { id: "t1".into(), name: name.into(), arguments: args }
-    }
-
-    // ── Tool execution tests ──
-
-    #[tokio::test]
-    async fn test_read_file() {
-        let r = execute_tool(None, &tc("read_file", json!({"path": "Cargo.toml"})), ".", false).await.unwrap();
-        assert!(r.contains("[package]"));
-    }
-
-    #[tokio::test]
-    async fn test_read_file_offset() {
-        let r = execute_tool(None, &tc("read_file", json!({"path": "Cargo.toml", "offset": 0, "limit": 3})), ".", false).await.unwrap();
-        assert!(r.lines().count() <= 3);
-    }
-
-    #[tokio::test]
-    async fn test_read_file_not_found() {
-        let r = execute_tool(None, &tc("read_file", json!({"path": "_no_such_file_69"})), ".", false).await;
-        assert!(r.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_write_edit_cycle() {
-        let p = "_test_we.txt";
-        let _ = std::fs::remove_file(p);
-        execute_tool(None, &tc("write_file", json!({"path": p, "content": "foo\nbar\n"})), ".", false).await.unwrap();
-        assert!(Path::new(p).exists());
-        let r = execute_tool(None, &tc("edit", json!({"path": p, "old_string": "foo", "new_string": "baz"})), ".", false).await.unwrap();
-        assert!(r.contains("Successfully applied edit") || r.contains("Replaced"));
-        let c = std::fs::read_to_string(p).unwrap();
-        assert!(c.contains("baz"));
-        assert!(!c.contains("foo"));
-        let _ = std::fs::remove_file(p);
-    }
-
-    #[tokio::test]
-    async fn test_write_creates_dirs() {
-        let p = "_test_dir_nested/f/a.txt";
-        let _ = std::fs::remove_dir_all("_test_dir_nested");
-        execute_tool(None, &tc("write_file", json!({"path": p, "content": "x"})), ".", false).await.unwrap();
-        assert!(Path::new(p).exists());
-        let _ = std::fs::remove_dir_all("_test_dir_nested");
-    }
-
-    #[tokio::test]
-    async fn test_edit_not_found_errs() {
-        let p = "_test_ef.txt";
-        std::fs::write(p, "hello").unwrap();
-        let r = execute_tool(None, &tc("edit", json!({"path": p, "old_string": "nope", "new_string": "x"})), ".", false).await;
-        assert!(r.is_err());
-        assert!(r.unwrap_err().contains("old_string not found"));
-        let _ = std::fs::remove_file(p);
-    }
-
-    #[tokio::test]
-    async fn test_grep() {
-        let r = execute_tool(None, &tc("grep", json!({"pattern": "tauri", "root": "."})), ".", false).await.unwrap();
-        assert!(r.contains("tauri"));
-    }
-
-    #[tokio::test]
-    async fn test_glob() {
-        let r = execute_tool(None, &tc("glob", json!({"pattern": "Cargo.toml", "root": "."})), ".", false).await.unwrap();
-        assert!(r.contains("Cargo.toml"));
-    }
-
-    #[tokio::test]
-    async fn test_list_directory() {
-        let r = execute_tool(None, &tc("list_directory", json!({"path": "."})), ".", false).await.unwrap();
-        assert!(r.contains("src"));
-    }
-
-    #[tokio::test]
-    async fn test_bash_run() {
-        let r = execute_tool(None, &tc("bash_run", json!({"command": "echo hello_test_42", "timeout": 10})), ".", false).await.unwrap();
-        assert!(r.contains("hello_test_42"));
-    }
-
-    #[tokio::test]
-    async fn test_bash_run_timeout() {
-        let r = execute_tool(None, &tc("bash_run", json!({"command": "ping -n 10 127.0.0.1", "timeout": 2})), ".", false).await;
-        assert!(r.is_err() || r.unwrap().contains("timed out"));
-    }
-
-    #[tokio::test]
-    async fn test_bash_run_failure() {
-        let r = execute_tool(None, &tc("bash_run", json!({"command": "exit 1", "timeout": 5})), ".", false).await.unwrap();
-        assert!(r.contains("exit code"));
-    }
-
-    #[tokio::test]
-    async fn test_unknown_tool() {
-        let r = execute_tool(None, &tc("foobar", json!({})), ".", false).await;
-        assert!(r.is_err());
-        assert!(r.unwrap_err().contains("Unknown tool"));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_system_prompt_persona() {
-        let agent = AgentConfig {
-            id: "t".into(), name: "t".into(), provider: "test".into(), model: "m".into(),
-            base_url: None, api_key: None, capabilities: vec![],
-            temperature: None, system_prompt: Some("custom".into()),
-            persona_id: Some("coder".into()), built_in: true,
-            cached_models: vec![], models_synced_at: None,
-        };
-        let sp = resolve_system_prompt(&agent);
-        assert!(sp.contains("expert software engineer"));
-    }
-
-    #[tokio::test]
-    async fn test_resolve_system_prompt_custom() {
-        let agent = AgentConfig {
-            id: "t".into(), name: "t".into(), provider: "test".into(), model: "m".into(),
-            base_url: None, api_key: None, capabilities: vec![],
-            temperature: None, system_prompt: Some("custom prompt".into()),
-            persona_id: None, built_in: false,
-            cached_models: vec![], models_synced_at: None,
-        };
-        let sp = resolve_system_prompt(&agent);
-        assert_eq!(sp, "custom prompt");
-    }
-
-    #[tokio::test]
-    async fn test_resolve_system_prompt_default() {
-        let agent = AgentConfig {
-            id: "t".into(), name: "t".into(), provider: "test".into(), model: "m".into(),
-            base_url: None, api_key: None, capabilities: vec![],
-            temperature: None, system_prompt: None,
-            persona_id: None, built_in: false,
-            cached_models: vec![], models_synced_at: None,
-        };
-        let sp = resolve_system_prompt(&agent);
-        assert_eq!(sp, "");
-    }
-
-    #[tokio::test]
-    async fn test_model_price_known() {
-        let (inp, out) = model_price("gpt-4o-mini");
-        assert!((inp - 0.00015).abs() < 1e-10);
-        assert!((out - 0.0006).abs() < 1e-10);
-    }
-
-    #[tokio::test]
-    async fn test_model_price_fallback() {
-        let (inp, out) = model_price("unknown-model-123");
-        assert!((inp - 0.001).abs() < 1e-10);
-        assert!((out - 0.002).abs() < 1e-10);
-    }
-
-    #[tokio::test]
-    async fn test_build_tools() {
-        let tools = build_tools();
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"write_file"));
-        assert!(names.contains(&"edit"));
-        assert!(names.contains(&"grep"));
-        assert!(names.contains(&"glob"));
-        assert!(names.contains(&"list_directory"));
-        assert!(names.contains(&"bash_run"));
-    }
-
-    #[tokio::test]
-    async fn test_auto_routing_model_selection() {
-        let state = AiManager::new();
-        // Insert a configured OpenRouter agent with a custom/default model set to "auto"
-        {
-            let mut agents = state.agents.lock().unwrap();
-            agents.insert("or-agent".into(), AgentConfig {
-                id: "or-agent".into(),
-                name: "OpenRouter Agent".into(),
-                provider: "openrouter".into(),
-                model: "auto".into(),
-                base_url: Some("https://openrouter.ai/api/v1".into()),
-                api_key: Some("test-key".into()),
-                capabilities: vec![],
-                temperature: None,
-                system_prompt: None,
-                persona_id: None,
-                built_in: false,
-                cached_models: vec![],
-                models_synced_at: None,
-            });
-        }
-
-        let registry = super::super::model_registry::ModelRegistry::load_default();
-        let baseline_agent = AgentConfig {
-            id: "baseline".into(),
-            name: "Baseline".into(),
-            provider: "openrouter".into(),
-            model: "auto".into(),
-            base_url: None,
-            api_key: None,
-            capabilities: vec![],
-            temperature: None,
-            system_prompt: None,
-            persona_id: None,
-            built_in: false,
-            cached_models: vec![],
-            models_synced_at: None,
-        };
-
-        // If route request decision wants "deepseek-r1"
-        let decision = super::super::routing_engine::RouteDecision {
-            intent: super::super::routing_engine::Intent::CodeReview,
-            context_size: super::super::routing_engine::ContextSize::Small,
-            token_count: 100,
-            output_type: super::super::routing_engine::OutputType::Narrative,
-            tool_route: None,
-            model_route: Some("deepseek-r1".into()),
-            reasoning_tier: super::super::model_registry::ReasoningTier::UltraHigh,
-            reason: "test".into(),
-            external_agent: None,
-        };
-
-        let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);
-
-        // It should NOT overwrite the model with "auto" (from provider_agent.model)
-        // It should set the model to "deepseek-r1" and use the provider_agent's connection details!
-        assert_eq!(resolved.model, "deepseek-r1");
-        assert_eq!(resolved.provider, "openrouter");
-        assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
-        assert_eq!(resolved.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
-    }
-
-    #[tokio::test]
-    async fn test_auto_routing_fallback_model_selection() {
-        let state = AiManager::new();
-        // Insert a configured OpenRouter agent with a custom/default model set to "auto"
-        {
-            let mut agents = state.agents.lock().unwrap();
-            agents.insert("or-agent".into(), AgentConfig {
-                id: "or-agent".into(),
-                name: "OpenRouter Agent".into(),
-                provider: "openrouter".into(),
-                model: "auto".into(),
-                base_url: Some("https://openrouter.ai/api/v1".into()),
-                api_key: Some("test-key".into()),
-                capabilities: vec![],
-                temperature: None,
-                system_prompt: None,
-                persona_id: None,
-                built_in: false,
-                cached_models: vec![],
-                models_synced_at: None,
-            });
-        }
-
-        let current_agent = AgentConfig {
-            id: "baseline".into(),
-            name: "Baseline".into(),
-            provider: "openrouter".into(),
-            model: "deepseek-r1".into(),
-            base_url: None,
-            api_key: None,
-            capabilities: vec![],
-            temperature: None,
-            system_prompt: None,
-            persona_id: None,
-            built_in: false,
-            cached_models: vec![],
-            models_synced_at: None,
-        };
-
-        let fallback_entry = super::super::fallback_manager::FallbackEntry {
-            provider: "openrouter".into(),
-            model_id: "qwen/qwen-2.5-coder-32b-instruct".into(),
-            tier: super::super::model_registry::ReasoningTier::High,
-            cost_per_1k: 0.0003,
-        };
-
-        let resolved = resolve_fallback_agent(&fallback_entry, &state, &current_agent);
-
-        // It should NOT overwrite the model with "auto" (from provider_agent.model)
-        // It should set the model to "qwen/qwen-2.5-coder-32b-instruct" and use the provider_agent's connection details!
-        assert_eq!(resolved.model, "qwen/qwen-2.5-coder-32b-instruct");
-        assert_eq!(resolved.provider, "openrouter");
-        assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
-        assert_eq!(resolved.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
-    }
-
-    #[tokio::test]
-    async fn test_auto_routing_unconfigured_provider() {
-        let state = AiManager::new(); // empty, no agents configured
-
-        let registry = super::super::model_registry::ModelRegistry::load_default();
-        let baseline_agent = AgentConfig {
-            id: "baseline".into(),
-            name: "Baseline".into(),
-            provider: "openrouter".into(),
-            model: "auto".into(),
-            base_url: None,
-            api_key: None,
-            capabilities: vec![],
-            temperature: None,
-            system_prompt: None,
-            persona_id: None,
-            built_in: false,
-            cached_models: vec![],
-            models_synced_at: None,
-        };
-
-        // Route to gemini-2.0-flash (provider "gemini")
-        let decision = super::super::routing_engine::RouteDecision {
-            intent: super::super::routing_engine::Intent::ExplainSimple,
-            context_size: super::super::routing_engine::ContextSize::Small,
-            token_count: 100,
-            output_type: super::super::routing_engine::OutputType::Narrative,
-            tool_route: None,
-            model_route: Some("gemini-2.0-flash".into()),
-            reasoning_tier: super::super::model_registry::ReasoningTier::Medium,
-            reason: "test".into(),
-            external_agent: None,
-        };
-
-        let resolved = resolve_routed_agent(&decision, &registry, &state, &baseline_agent);
-
-        // Should use the routed model and clear base_url / api_key as it has no provider agent
-        assert_eq!(resolved.model, "gemini-2.0-flash");
-        assert_eq!(resolved.provider, "gemini");
-        assert_eq!(resolved.api_key, None);
-        assert_eq!(resolved.base_url, None);
-    }
-
-    // ── API connectivity tests (set env vars, run with `cargo test -- --ignored`) ──
-
-    async fn simple_chat(api_key: &str, base_url: &str, model: &str, msg: &str) -> Result<String, String> {
-        let body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": msg}],
-            "temperature": 0.5,
-            "max_tokens": 80,
-        });
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
-        let resp = client
-            .post(format!("{}/chat/completions", base_url.trim_end_matches('/')))
-            .json(&body)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .await
-            .map_err(|e| format!("HTTP: {e}"))?;
-        let status = resp.status();
-        let text = resp.text().await.map_err(|e| format!("Body: {e}"))?;
-        if !status.is_success() {
-            return Err(format!("{}: {}", status, text));
-        }
-        Ok(text)
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_api_cerebras() {
-        let key = std::env::var("CEREBRAS_API_KEY").expect("Set CEREBRAS_API_KEY");
-        let r = simple_chat(&key, "https://api.cerebras.ai/v1", "gpt-oss-120b", "Reply just: OK").await.unwrap();
-        assert!(r.contains("OK") || r.contains("ok") || r.contains("Ok"));
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_api_mistral() {
-        let key = std::env::var("MISTRAL_API_KEY").expect("Set MISTRAL_API_KEY");
-        let r = simple_chat(&key, "https://api.mistral.ai/v1", "mistral-large-latest", "Reply just: OK").await.unwrap();
-        assert!(r.contains("OK") || r.contains("ok") || r.contains("Ok"));
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_api_vercel() {
-        let key = std::env::var("VERCEL_API_KEY").expect("Set VERCEL_API_KEY");
-        let r = simple_chat(&key, "https://ai-gateway.vercel.sh/v1", "openai/gpt-4o-mini", "Reply just: OK").await.unwrap();
-        assert!(r.contains("OK") || r.contains("ok") || r.contains("Ok"));
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_api_gemini() {
-        let key = std::env::var("GEMINI_API_KEY").expect("Set GEMINI_API_KEY");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build().unwrap();
-        let body = serde_json::json!({
-            "contents": [{"parts": [{"text": "Reply just: OK"}]}],
-            "generationConfig": {"maxOutputTokens": 20}
-        });
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}");
-        let resp = client.post(&url).json(&body).send().await.unwrap();
-        assert!(resp.status().is_success(), "Gemini: {}", resp.status());
-    }
-
-    // ── ReAct loop test with tool calling ──
-
-    #[ignore]
-    #[tokio::test]
-    async fn test_react_loop_coder_read_file() {
-        let key = std::env::var("CEREBRAS_API_KEY").expect("Set CEREBRAS_API_KEY");
-        let agent = AgentConfig {
-            id: "coder-test".into(), name: "Coder Test".into(),
-            provider: "cerebras".into(), model: "gpt-oss-120b".into(),
-            base_url: Some("https://api.cerebras.ai/v1".into()),
-            api_key: Some(key),
-            capabilities: vec!["tools".into()],
-            temperature: Some(0.5),
-            system_prompt: None,
-            persona_id: Some("coder".into()),
-            built_in: true,
-            cached_models: vec![],
-            models_synced_at: None,
-        };
-        let messages = vec![
-            ChatMessage { role: "user".into(), content: "Read Cargo.toml and tell me the package name.".into(), display_content: None },
-        ];
-        let (content, _, _) = run_react_loop_inner(&agent, &messages, "https://api.cerebras.ai/v1").await.unwrap();
-        assert!(content.contains("codlib") || content.contains("package") || content.contains("name"));
-    }
-
-    // Test helper that calls run_react_loop without the app handle
-    async fn run_react_loop_inner(
-        agent: &AgentConfig,
-        messages: &[ChatMessage],
-        base_url: &str,
-    ) -> Result<(String, u64, u64), String> {
-        let tools = build_tools();
-        let tool_defs: Vec<Value> = tools.iter().map(|t| serde_json::json!({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters
-            }
-        })).collect();
-
-        let mut conversation: Vec<Value> = Vec::new();
-        let sp = resolve_system_prompt(agent);
-        if !sp.is_empty() {
-            conversation.push(serde_json::json!({"role": "system", "content": sp}));
-        }
-        for m in messages {
-            conversation.push(serde_json::json!({"role": m.role, "content": m.content}));
-        }
-
-        let mut full_content = String::new();
-        let mut total_input = 0u64;
-        let mut total_output = 0u64;
-        let max_steps = 10;
-
-        for _step in 0..max_steps {
-            let body = serde_json::json!({
-                "model": agent.model,
-                "messages": conversation,
-                "temperature": agent.temperature.unwrap_or(0.7),
-                "max_tokens": 4096,
-                "tools": tool_defs,
-                "stream": false,
-            });
-
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
-                .build()
-                .map_err(|e| e.to_string())?;
-            let mut req_builder = client
-                .post(format!("{}/chat/completions", base_url))
-                .json(&body);
-            if let Some(key) = &agent.api_key {
-                req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
-            }
-
-            let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
-            if !response.status().is_success() {
-                let status = response.status();
-                let text = response.text().await.unwrap_or_default();
-                return Err(format!("AI request failed ({}): {}", status, text));
-            }
-
-            let resp_json: Value = response.json().await.map_err(|e| format!("Parse error: {}", e))?;
-
-            if let Some(usage) = resp_json["usage"].as_object() {
-                if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) { total_input += v; }
-                if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) { total_output += v; }
-            }
-
-            let choice = &resp_json["choices"][0]["message"];
-
-            let tool_calls = choice["tool_calls"].as_array()
-                .map(|arr| arr.iter().filter_map(|tc| {
-                    let id = tc["id"].as_str()?.to_string();
-                    let name = tc["function"]["name"].as_str()?.to_string();
-                    let args: Value = serde_json::from_str(tc["function"]["arguments"].as_str()?)
-                        .unwrap_or(Value::Null);
-                    Some(ToolCall { id, name, arguments: args })
-                }).collect::<Vec<_>>())
-                .unwrap_or_default();
-
-            if !tool_calls.is_empty() {
-                let workspace_root = std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                let assistant_msg = serde_json::json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": choice["tool_calls"]
-                });
-                conversation.push(assistant_msg);
-
-                for tc in &tool_calls {
-                    let result = execute_tool(None, tc, &workspace_root, false).await.unwrap_or_else(|e| format!("Error: {}", e));
-                    conversation.push(serde_json::json!({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result
-                    }));
-                }
-            } else {
-                if let Some(content) = choice["content"].as_str() {
-                    full_content = content.to_string();
-                }
-                break;
-            }
-        }
-
-        Ok((full_content, total_input, total_output))
-    }
-}

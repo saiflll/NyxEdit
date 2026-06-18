@@ -1,0 +1,796 @@
+{
+  "nodes": {
+    "src\\lib\\themes.ts:applyFont": {
+      "id": "src\\lib\\themes.ts:applyFont",
+      "name": "applyFont",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 160,
+      "column": 1,
+      "end_line": 162,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:saveGlobalFile": {
+      "id": "src\\lib\\nyxConfig.ts:saveGlobalFile",
+      "name": "saveGlobalFile",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 89,
+      "column": 1,
+      "end_line": 91,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:loadGlobalNyxConfig": {
+      "id": "src\\lib\\nyxConfig.ts:loadGlobalNyxConfig",
+      "name": "loadGlobalNyxConfig",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 127,
+      "column": 1,
+      "end_line": 129,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:structures:Item": {
+      "id": "src\\lib\\stores.svelte.ts:structures:Item",
+      "name": "Item",
+      "kind": "Method",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 220,
+      "column": 1,
+      "end_line": 223,
+      "doc_comment": null,
+      "parent_id": "src\\lib\\stores.svelte.ts:structures"
+    },
+    "src\\lib\\security.ts:checkReadable": {
+      "id": "src\\lib\\security.ts:checkReadable",
+      "name": "checkReadable",
+      "kind": "Function",
+      "file_path": "src\\lib\\security.ts",
+      "line": 65,
+      "column": 1,
+      "end_line": 67,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:saveEditorLangs": {
+      "id": "src\\lib\\stores.svelte.ts:saveEditorLangs",
+      "name": "saveEditorLangs",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 217,
+      "column": 1,
+      "end_line": 219,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\idle.svelte.ts:schedule": {
+      "id": "src\\lib\\idle.svelte.ts:schedule",
+      "name": "schedule",
+      "kind": "Function",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 11,
+      "column": 1,
+      "end_line": 13,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:saveNyxConfig": {
+      "id": "src\\lib\\nyxConfig.ts:saveNyxConfig",
+      "name": "saveNyxConfig",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 28,
+      "column": 1,
+      "end_line": 30,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\idle.svelte.ts:checkIdle": {
+      "id": "src\\lib\\idle.svelte.ts:checkIdle",
+      "name": "checkIdle",
+      "kind": "Function",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 6,
+      "column": 1,
+      "end_line": 8,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:getActiveSettings": {
+      "id": "src\\lib\\nyxConfig.ts:getActiveSettings",
+      "name": "getActiveSettings",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 143,
+      "column": 1,
+      "end_line": 145,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:getGlobalFilePath": {
+      "id": "src\\lib\\nyxConfig.ts:getGlobalFilePath",
+      "name": "getGlobalFilePath",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 77,
+      "column": 1,
+      "end_line": 79,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:saveFile": {
+      "id": "src\\lib\\stores.svelte.ts:saveFile",
+      "name": "saveFile",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 141,
+      "column": 1,
+      "end_line": 143,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\security.ts:checkShellCommand": {
+      "id": "src\\lib\\security.ts:checkShellCommand",
+      "name": "checkShellCommand",
+      "kind": "Function",
+      "file_path": "src\\lib\\security.ts",
+      "line": 109,
+      "column": 1,
+      "end_line": 111,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\idle.svelte.ts:getIdleState": {
+      "id": "src\\lib\\idle.svelte.ts:getIdleState",
+      "name": "getIdleState",
+      "kind": "Function",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 27,
+      "column": 1,
+      "end_line": 29,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\themes.ts:getStoredFont": {
+      "id": "src\\lib\\themes.ts:getStoredFont",
+      "name": "getStoredFont",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 129,
+      "column": 1,
+      "end_line": 131,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\idle.svelte.ts:initIdle": {
+      "id": "src\\lib\\idle.svelte.ts:initIdle",
+      "name": "initIdle",
+      "kind": "Function",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 16,
+      "column": 1,
+      "end_line": 18,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:addToast": {
+      "id": "src\\lib\\stores.svelte.ts:addToast",
+      "name": "addToast",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 235,
+      "column": 1,
+      "end_line": 237,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\icon-overrides.ts:getIconForExt": {
+      "id": "src\\lib\\icon-overrides.ts:getIconForExt",
+      "name": "getIconForExt",
+      "kind": "Function",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 17,
+      "column": 1,
+      "end_line": 19,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\security.ts:checkWritable": {
+      "id": "src\\lib\\security.ts:checkWritable",
+      "name": "checkWritable",
+      "kind": "Function",
+      "file_path": "src\\lib\\security.ts",
+      "line": 90,
+      "column": 1,
+      "end_line": 92,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:structures:Timeout": {
+      "id": "src\\lib\\stores.svelte.ts:structures:Timeout",
+      "name": "Timeout",
+      "kind": "Method",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 238,
+      "column": 1,
+      "end_line": 241,
+      "doc_comment": null,
+      "parent_id": "src\\lib\\stores.svelte.ts:structures"
+    },
+    "src\\lib\\themes.ts:applyFontSize": {
+      "id": "src\\lib\\themes.ts:applyFontSize",
+      "name": "applyFontSize",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 175,
+      "column": 1,
+      "end_line": 177,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:structures:catch": {
+      "id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "name": "catch",
+      "kind": "Method",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 221,
+      "column": 1,
+      "end_line": 224,
+      "doc_comment": null,
+      "parent_id": "src\\lib\\stores.svelte.ts:structures"
+    },
+    "src\\lib\\security.ts:basename": {
+      "id": "src\\lib\\security.ts:basename",
+      "name": "basename",
+      "kind": "Function",
+      "file_path": "src\\lib\\security.ts",
+      "line": 56,
+      "column": 1,
+      "end_line": 58,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:getNyxDir": {
+      "id": "src\\lib\\nyxConfig.ts:getNyxDir",
+      "name": "getNyxDir",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 6,
+      "column": 1,
+      "end_line": 8,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\icon-overrides.ts:getDefaultIconSvg": {
+      "id": "src\\lib\\icon-overrides.ts:getDefaultIconSvg",
+      "name": "getDefaultIconSvg",
+      "kind": "Function",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 36,
+      "column": 1,
+      "end_line": 38,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\icon-overrides.ts:getColorForExt": {
+      "id": "src\\lib\\icon-overrides.ts:getColorForExt",
+      "name": "getColorForExt",
+      "kind": "Function",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 32,
+      "column": 1,
+      "end_line": 34,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\security.ts:normalize": {
+      "id": "src\\lib\\security.ts:normalize",
+      "name": "normalize",
+      "kind": "Function",
+      "file_path": "src\\lib\\security.ts",
+      "line": 61,
+      "column": 1,
+      "end_line": 63,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:loadWorkspace": {
+      "id": "src\\lib\\stores.svelte.ts:loadWorkspace",
+      "name": "loadWorkspace",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 116,
+      "column": 1,
+      "end_line": 118,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:ensureNyxDir": {
+      "id": "src\\lib\\nyxConfig.ts:ensureNyxDir",
+      "name": "ensureNyxDir",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 13,
+      "column": 1,
+      "end_line": 15,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\themes.ts:getStoredTheme": {
+      "id": "src\\lib\\themes.ts:getStoredTheme",
+      "name": "getStoredTheme",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 121,
+      "column": 1,
+      "end_line": 123,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\themes.ts:getStoredFontSize": {
+      "id": "src\\lib\\themes.ts:getStoredFontSize",
+      "name": "getStoredFontSize",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 167,
+      "column": 1,
+      "end_line": 169,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:loadGlobalFile": {
+      "id": "src\\lib\\nyxConfig.ts:loadGlobalFile",
+      "name": "loadGlobalFile",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 100,
+      "column": 1,
+      "end_line": 102,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\icon-overrides.ts:getExtensionIcons": {
+      "id": "src\\lib\\icon-overrides.ts:getExtensionIcons",
+      "name": "getExtensionIcons",
+      "kind": "Function",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 3,
+      "column": 1,
+      "end_line": 5,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\icon-overrides.ts:setExtensionIcons": {
+      "id": "src\\lib\\icon-overrides.ts:setExtensionIcons",
+      "name": "setExtensionIcons",
+      "kind": "Function",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 11,
+      "column": 1,
+      "end_line": 13,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:structures:InitialLangs": {
+      "id": "src\\lib\\stores.svelte.ts:structures:InitialLangs",
+      "name": "InitialLangs",
+      "kind": "Method",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 215,
+      "column": 1,
+      "end_line": 218,
+      "doc_comment": null,
+      "parent_id": "src\\lib\\stores.svelte.ts:structures"
+    },
+    "src\\lib\\themes.ts:applyTheme": {
+      "id": "src\\lib\\themes.ts:applyTheme",
+      "name": "applyTheme",
+      "kind": "Function",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 137,
+      "column": 1,
+      "end_line": 139,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:getGlobalSettingsPath": {
+      "id": "src\\lib\\nyxConfig.ts:getGlobalSettingsPath",
+      "name": "getGlobalSettingsPath",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 65,
+      "column": 1,
+      "end_line": 67,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\utils.ts:fmtTime": {
+      "id": "src\\lib\\utils.ts:fmtTime",
+      "name": "fmtTime",
+      "kind": "Function",
+      "file_path": "src\\lib\\utils.ts",
+      "line": 1,
+      "column": 1,
+      "end_line": 3,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:loadNyxConfig": {
+      "id": "src\\lib\\nyxConfig.ts:loadNyxConfig",
+      "name": "loadNyxConfig",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 40,
+      "column": 1,
+      "end_line": 42,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\idle.svelte.ts:poke": {
+      "id": "src\\lib\\idle.svelte.ts:poke",
+      "name": "poke",
+      "kind": "Function",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 18,
+      "column": 1,
+      "end_line": 20,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\nyxConfig.ts:saveGlobalNyxConfig": {
+      "id": "src\\lib\\nyxConfig.ts:saveGlobalNyxConfig",
+      "name": "saveGlobalNyxConfig",
+      "kind": "Function",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 116,
+      "column": 1,
+      "end_line": 118,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:loadAgents": {
+      "id": "src\\lib\\stores.svelte.ts:loadAgents",
+      "name": "loadAgents",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 150,
+      "column": 1,
+      "end_line": 152,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:sendChat": {
+      "id": "src\\lib\\stores.svelte.ts:sendChat",
+      "name": "sendChat",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 155,
+      "column": 1,
+      "end_line": 157,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:structures": {
+      "id": "src\\lib\\stores.svelte.ts:structures",
+      "name": "structures",
+      "kind": "Class",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 182,
+      "column": 1,
+      "end_line": 187,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:getInitialLangs": {
+      "id": "src\\lib\\stores.svelte.ts:getInitialLangs",
+      "name": "getInitialLangs",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 189,
+      "column": 1,
+      "end_line": 191,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:loadDir": {
+      "id": "src\\lib\\stores.svelte.ts:loadDir",
+      "name": "loadDir",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 105,
+      "column": 1,
+      "end_line": 107,
+      "doc_comment": null,
+      "parent_id": null
+    },
+    "src\\lib\\stores.svelte.ts:openFile": {
+      "id": "src\\lib\\stores.svelte.ts:openFile",
+      "name": "openFile",
+      "kind": "Function",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 134,
+      "column": 1,
+      "end_line": 136,
+      "doc_comment": null,
+      "parent_id": null
+    }
+  },
+  "edges": [
+    {
+      "source_id": "src\\lib\\icon-overrides.ts:use",
+      "target_id": "src\\lib\\icon-overrides.ts:getExtensionIcons",
+      "kind": "References",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 18
+    },
+    {
+      "source_id": "src\\lib\\icon-overrides.ts:use",
+      "target_id": "src\\lib\\icon-overrides.ts:getColorForExt",
+      "kind": "References",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 37
+    },
+    {
+      "source_id": "src\\lib\\icon-overrides.ts:use",
+      "target_id": "src\\lib\\icon-overrides.ts:getIconForExt",
+      "kind": "References",
+      "file_path": "src\\lib\\icon-overrides.ts",
+      "line": 60
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:schedule",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 8
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:checkIdle",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 13
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:schedule",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 21
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:poke",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 23
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:schedule",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 24
+    },
+    {
+      "source_id": "src\\lib\\idle.svelte.ts:use",
+      "target_id": "src\\lib\\idle.svelte.ts:schedule",
+      "kind": "References",
+      "file_path": "src\\lib\\idle.svelte.ts",
+      "line": 30
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getNyxDir",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 14
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:ensureNyxDir",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 29
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getNyxDir",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 41
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getGlobalFilePath",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 91
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getGlobalFilePath",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 102
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getGlobalSettingsPath",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 118
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:getGlobalSettingsPath",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 129
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:loadNyxConfig",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 154
+    },
+    {
+      "source_id": "src\\lib\\nyxConfig.ts:use",
+      "target_id": "src\\lib\\nyxConfig.ts:loadGlobalNyxConfig",
+      "kind": "References",
+      "file_path": "src\\lib\\nyxConfig.ts",
+      "line": 166
+    },
+    {
+      "source_id": "src\\lib\\security.ts:use",
+      "target_id": "src\\lib\\security.ts:normalize",
+      "kind": "References",
+      "file_path": "src\\lib\\security.ts",
+      "line": 66
+    },
+    {
+      "source_id": "src\\lib\\security.ts:use",
+      "target_id": "src\\lib\\security.ts:basename",
+      "kind": "References",
+      "file_path": "src\\lib\\security.ts",
+      "line": 67
+    },
+    {
+      "source_id": "src\\lib\\security.ts:use",
+      "target_id": "src\\lib\\security.ts:checkReadable",
+      "kind": "References",
+      "file_path": "src\\lib\\security.ts",
+      "line": 91
+    },
+    {
+      "source_id": "src\\lib\\security.ts:use",
+      "target_id": "src\\lib\\security.ts:normalize",
+      "kind": "References",
+      "file_path": "src\\lib\\security.ts",
+      "line": 94
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:structures",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:Item",
+      "kind": "Contains",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 207
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:structures",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:InitialLangs",
+      "kind": "Contains",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 215
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:structures",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:Item",
+      "kind": "Contains",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 220
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:structures",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "kind": "Contains",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 221
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:structures",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:Timeout",
+      "kind": "Contains",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 238
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 111
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 120
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 125
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:InitialLangs",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 189
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:Item",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 207
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:structures:catch",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 211
+    },
+    {
+      "source_id": "src\\lib\\stores.svelte.ts:use",
+      "target_id": "src\\lib\\stores.svelte.ts:getInitialLangs",
+      "kind": "References",
+      "file_path": "src\\lib\\stores.svelte.ts",
+      "line": 215
+    },
+    {
+      "source_id": "src\\lib\\themes.ts:use",
+      "target_id": "src\\lib\\themes.ts:getStoredFont",
+      "kind": "References",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 150
+    },
+    {
+      "source_id": "src\\lib\\themes.ts:use",
+      "target_id": "src\\lib\\themes.ts:getStoredFont",
+      "kind": "References",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 152
+    },
+    {
+      "source_id": "src\\lib\\themes.ts:use",
+      "target_id": "src\\lib\\themes.ts:getStoredFontSize",
+      "kind": "References",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 152
+    },
+    {
+      "source_id": "src\\lib\\themes.ts:use",
+      "target_id": "src\\lib\\themes.ts:getStoredFont",
+      "kind": "References",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 167
+    },
+    {
+      "source_id": "src\\lib\\themes.ts:use",
+      "target_id": "src\\lib\\themes.ts:applyFont",
+      "kind": "References",
+      "file_path": "src\\lib\\themes.ts",
+      "line": 175
+    }
+  ]
+}

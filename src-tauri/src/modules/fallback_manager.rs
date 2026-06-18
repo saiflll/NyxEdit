@@ -42,12 +42,13 @@ impl FallbackManager {
             })
             .collect();
 
-        // Sort by cost asc, then fallback_priority asc (lower = higher priority)
+        // Sort by cost asc, then tier asc (lower tier = cheaper/simpler first)
         // Match the sort order used in ModelRegistry::select_model
         candidates.sort_by(|a, b| {
             a.cost_per_1k
                 .partial_cmp(&b.cost_per_1k)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.tier.cmp(&b.tier))
         });
 
         Self {

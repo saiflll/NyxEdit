@@ -133,7 +133,8 @@ impl ContextManager {
                 }
                 let content_lower = msg.content.to_lowercase();
                 let matches = keywords.iter().filter(|k| content_lower.contains(*k)).count();
-                if matches > 0 && matches >= (keywords.len().max(1) / 2) {
+                // Use ceiling division so a 1-keyword query requires 1 match (not 0)
+                if matches > 0 && matches >= keywords.len().max(1).div_ceil(2) {
                     results.push(ChatMessage {
                         role: msg.role.clone(),
                         content: format!("[From past session '{}']\n{}", session.name, msg.content),

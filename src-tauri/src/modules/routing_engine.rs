@@ -103,6 +103,12 @@ impl RoutingEngine {
             return Intent::ArchDesign;
         }
 
+        // Code review triggers — must be checked BEFORE RefactorFull to avoid
+        // "review and refactor" routing to RefactorFull incorrectly
+        if lower.contains("review") || lower.contains("tinjau") || lower.contains("periksa kode") {
+            return Intent::CodeReview;
+        }
+
         // Refactor full triggers
         if lower.contains("refactor") || lower.contains("optimasi") || lower.contains("restructure") {
             return Intent::RefactorFull;
@@ -111,11 +117,6 @@ impl RoutingEngine {
         // Debug logic triggers
         if lower.contains("bug") || lower.contains("error") || lower.contains("kenapa salah") || lower.contains("memory leak") || lower.contains("race condition") {
             return Intent::DebugLogic;
-        }
-
-        // Code review triggers
-        if lower.contains("review") || lower.contains("tinjau") || lower.contains("periksa kode") {
-            return Intent::CodeReview;
         }
 
         // Code write triggers

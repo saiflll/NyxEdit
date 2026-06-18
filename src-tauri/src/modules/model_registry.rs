@@ -4,7 +4,7 @@ use std::path::Path;
 
 const DEFAULT_MODELS_TOML: &str = include_str!("../../models.toml");
 
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReasoningTier {
     UltraHigh,
     High,
