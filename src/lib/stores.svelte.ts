@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { writable } from 'svelte/store';
+import { writable, get } from "svelte/store";
 
 export type AgentPersona = {
   id: string;
@@ -224,7 +224,7 @@ export function saveEditorLangs(langs: Record<string, boolean>) {
 export type Toast = {
   id: string;
   message: string;
-  type: "info" | "success" | "error";
+  type: "info" | "success" | "error" | "warning";
 };
 
 export const toasts = writable<Toast[]>([]);
