@@ -251,6 +251,27 @@ impl AiManager {
             }
             // Warm cache: pre-load session list and scan cache on first call
             self.warm_cache(app);
+            
+            // Stage 5: Auto-load Knowledge Graph (lazy load on first use)
+            if let Some(graph_state) = app.try_state::<crate::modules::graph::SymbolGraph>() {
+                let _ = graph_state.ensure_loaded();
+            }
+            
+            // Stage 6: Auto-detect Project Intel
+            if let Some(intel_state) = app.try_state::<crate::modules::project_intel::ProjectIntelState>() {
+                if let Some(root) = self.workspace_root.lock().unwrap().clone() {
+                    let ctx = intel_state.detect(&root);
+                    let _ = app.emit("nyx:project_detected", serde_json::json!({
+                        "framework": ctx.framework_label(),
+                        "language": ctx.language,
+                        "has_tests": ctx.has_tests,
+                        "has_ci": ctx.has_ci,
+                        "has_docker": ctx.has_docker,
+                        "file_count": ctx.file_count,
+                        "src_dirs": ctx.src_dirs,
+                    }));
+                }
+            }
         }
     }
 
@@ -1799,34 +1820,47 @@ pub async fn ai_chat_stream(
         }
     }
 
-    // Stage 9: Multi-Agent Orchestrator delegation route
+    // Stage 9: Multi-Agent Orchestrator delegation route (AUTO-TRIGGER)
+    // Otomatis delegasikan ke orchestrator untuk tugas kompleks (RefactorFull, CodeReview, ArchDesign)
+    // Tidak perlu manual command 'orch_delegate' lagi
     if let Some(ref decision) = routing_decision {
-        if (decision.intent == super::routing_engine::Intent::RefactorFull || decision.intent == super::routing_engine::Intent::CodeReview)
-            && matches!(decision.context_size, super::routing_engine::ContextSize::Large | super::routing_engine::ContextSize::Massive)
+        if matches!(decision.intent, 
+            super::routing_engine::Intent::RefactorFull | 
+            super::routing_engine::Intent::CodeReview |
+            super::routing_engine::Intent::ArchDesign)
         {
             use tauri::Manager;
             let role = match decision.intent {
                 super::routing_engine::Intent::CodeReview => super::agent_orch::SubAgentRole::CodeReviewer,
                 super::routing_engine::Intent::RefactorFull => super::agent_orch::SubAgentRole::Refactorer,
+                super::routing_engine::Intent::ArchDesign => super::agent_orch::SubAgentRole::Architect,
                 _ => super::agent_orch::SubAgentRole::CodeReviewer,
             };
             
             let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
-            let _ = app.emit("ai:route_progress", "[Auto Mode] Context size is large. Delegating task to Multi-Agent Orchestrator...".to_string());
+            let _ = app.emit("ai:route_progress", "[Auto Mode] Complex intent detected. Delegating task to Multi-Agent Orchestrator...".to_string());
             
             let orch_state = app.state::<crate::modules::agent_orch::AgentOrchestrator>();
             
-            let task_id = super::agent_orch::delegate_and_run(
+            match super::agent_orch::delegate_and_run(
                 &app,
                 &orch_state,
                 &state,
                 role,
                 prompt,
                 messages.clone(),
-            )?;
-            
-            let _ = app.emit("ai:route_progress", format!("Delegated orchestrator task successfully spawned: {}", task_id));
-            return Ok(());
+            ) {
+                Ok(task_id) => {
+                    let _ = app.emit("ai:route_progress", format!("Delegated orchestrator task successfully spawned: {}", task_id));
+                    return Ok(());
+                }
+                Err(e) => {
+                    let err_msg = format!("Orchestrator delegation failed: {}. Falling back to single-agent execution.", e);
+                    log("AI", &err_msg);
+                    let _ = app.emit("ai:route_progress", err_msg);
+                    // Lanjut ke fallback logic (DAG atau Single Model)
+                }
+            }
         }
     }
 

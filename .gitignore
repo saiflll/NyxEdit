@@ -2,16 +2,8 @@
 # Dependencies
 node_modules/
 
-# SvelteKit
+# Build outputs
 .svelte-kit/
-
-# Build artifacts
-dist/
-build/
-target/
-
-# Logs
-*.log
 
 # Environment variables
 .env
@@ -22,7 +14,10 @@ target/
 .vscode/
 .idea/
 
-# OS
+# Logs
+*.log
+
+# OS generated files
 .DS_Store
 Thumbs.db
 

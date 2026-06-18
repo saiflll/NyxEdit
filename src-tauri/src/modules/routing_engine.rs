@@ -153,7 +153,10 @@ impl RoutingEngine {
         }
 
         // Default code diff for code modifications
-        if matches!(intent, Intent::CodeWrite | Intent::DebugLogic | Intent::RefactorFull | Intent::TestGenerate) {
+        // RefactorFull selalu CodeDiff meskipun ada kata "explain" (untuk memastikan chain plan berjalan)
+        if matches!(intent, Intent::RefactorFull) {
+            OutputType::CodeDiff
+        } else if matches!(intent, Intent::CodeWrite | Intent::DebugLogic | Intent::TestGenerate) {
             OutputType::CodeDiff
         } else {
             OutputType::Narrative
