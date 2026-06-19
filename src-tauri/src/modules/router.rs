@@ -119,25 +119,28 @@ impl RouterDecision {
 
     fn sensitive_filename(name: &str) -> bool {
         let lower = name.to_lowercase();
-        // common sensitive patterns
-        let patterns = [
-            ".env",
-            ".pem",
-            ".key",
-            ".p12",
-            ".pfx",
-            "id_rsa",
-            "id_ed25519",
-            "secret",
-            "credential",
-            "token",
-            "password",
-        ];
-        for p in &patterns {
-            if lower.ends_with(p) || lower.contains(p) || lower == *p {
+        // Pattern yang lebih spesifik untuk menghindari false positive (misal: tokenizer.py)
+        // Hanya match jika ada boundary atau ekstensi spesifik
+        let exact_matches = [".env", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519"];
+        let word_matches = ["_secret", "_credential", "_token", "_password", "secret_key", "cred.json"];
+        
+        // Cek exact match (akhiran file)
+        for p in &exact_matches {
+            if lower.ends_with(p) {
                 return true;
             }
         }
+        
+        // Cek word boundary (harus diawali _ atau . atau /)
+        for p in &word_matches {
+            if lower.contains(&format!("_{}", p)) || 
+               lower.contains(&format!("/{}", p)) || 
+               lower.contains(&format!("\\{}", p)) ||
+               lower == *p {
+                return true;
+            }
+        }
+        
         false
     }
 
