@@ -852,6 +852,39 @@ fn build_tools() -> Vec<ToolDef> {
                 "required": ["prompt"]
             }),
         },
+        ToolDef {
+            name: "symbol_search".into(),
+            description: "Search for symbols (functions, classes, structs, variables, etc.) in the workspace symbol graph by query string.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query or symbol name"}
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
+            name: "symbol_definitions".into(),
+            description: "Find definitions of a symbol by name in the workspace symbol graph.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Exact name of the symbol to find definitions for"}
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
+            name: "symbol_references".into(),
+            description: "Find references to a symbol by its unique ID (from a previous search or definition tool result).".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Unique symbol ID"}
+                },
+                "required": ["id"]
+            }),
+        },
     ]
 }
 
@@ -942,6 +975,12 @@ struct StyleCodingConfig {
     skill_write: Option<bool>,
     #[serde(rename = "skillTerminal")]
     skill_terminal: Option<bool>,
+    #[serde(rename = "costBudgetLimit")]
+    cost_budget_limit: Option<f64>,
+    #[serde(rename = "multiAgentStepsThreshold")]
+    multi_agent_steps_threshold: Option<usize>,
+    #[serde(rename = "multiAgentFilesThreshold")]
+    multi_agent_files_threshold: Option<usize>,
 }
 
 fn load_style_coding_config(workspace_root: &str) -> Option<StyleCodingConfig> {
@@ -1280,10 +1319,140 @@ async fn execute_tool(app: Option<&tauri::AppHandle>, tc: &ToolCall, workspace_r
             }
             Ok(result)
         }
+        "symbol_search" => {
+            let query = tc.arguments["query"].as_str().ok_or("missing query")?;
+            if let Some(app) = app {
+                if let Some(graph_state) = app.try_state::<crate::modules::graph::GraphState>() {
+                    let nodes_count = graph_state.stats().map(|(n, _)| n).unwrap_or(0);
+                    if nodes_count == 0 {
+                        return Ok(fallback_grep_search(query, workspace_root));
+                    }
+                    let results = graph_state.search(query).map_err(|e| format!("Graph search error: {}", e))?;
+                    if results.is_empty() {
+                        return Ok(format!("No matching symbols found for '{}'. Using fallback search:\n{}", query, fallback_grep_search(query, workspace_root)));
+                    }
+                    let formatted = results.iter().map(|n| {
+                        format!("Symbol: {} | Kind: {:?} | File: {}:{} | ID: {}", n.name, n.kind, n.file_path, n.line, n.id)
+                    }).collect::<Vec<_>>().join("\n");
+                    return Ok(formatted);
+                }
+            }
+            Ok(fallback_grep_search(query, workspace_root))
+        }
+        "symbol_definitions" => {
+            let name = tc.arguments["name"].as_str().ok_or("missing name")?;
+            if let Some(app) = app {
+                if let Some(graph_state) = app.try_state::<crate::modules::graph::GraphState>() {
+                    let nodes_count = graph_state.stats().map(|(n, _)| n).unwrap_or(0);
+                    if nodes_count == 0 {
+                        return Ok(fallback_grep_search(name, workspace_root));
+                    }
+                    let results = graph_state.definitions(name).map_err(|e| format!("Graph definitions error: {}", e))?;
+                    if results.is_empty() {
+                        return Ok(format!("No definitions found for symbol '{}'. Using fallback search:\n{}", name, fallback_grep_search(name, workspace_root)));
+                    }
+                    let formatted = results.iter().map(|n| {
+                        format!("Symbol: {} | Kind: {:?} | File: {}:{} | ID: {}", n.name, n.kind, n.file_path, n.line, n.id)
+                    }).collect::<Vec<_>>().join("\n");
+                    return Ok(formatted);
+                }
+            }
+            Ok(fallback_grep_search(name, workspace_root))
+        }
+        "symbol_references" => {
+            let id = tc.arguments["id"].as_str().ok_or("missing id")?;
+            if let Some(app) = app {
+                if let Some(graph_state) = app.try_state::<crate::modules::graph::GraphState>() {
+                    let nodes_count = graph_state.stats().map(|(n, _)| n).unwrap_or(0);
+                    if nodes_count == 0 {
+                        return Ok("No references found. Indexing is incomplete.".to_string());
+                    }
+                    let results = graph_state.references(id).map_err(|e| format!("Graph references error: {}", e))?;
+                    if results.is_empty() {
+                        return Ok("No references found for symbol ID.".to_string());
+                    }
+                    let formatted = results.iter().map(|n| {
+                        format!("Symbol: {} | Kind: {:?} | File: {}:{} | ID: {}", n.name, n.kind, n.file_path, n.line, n.id)
+                    }).collect::<Vec<_>>().join("\n");
+                    return Ok(formatted);
+                }
+            }
+            Ok("Symbol references not available (graph state missing).".to_string())
+        }
         "claude_run" | "gemini_run" | "opencode_run" | "aider_run" | "codex_run" | "agy_run" => {
             execute_cli_tool(tc, workspace_root).await
         }
         _ => Err(format!("Unknown tool: {}", tc.name)),
+    }
+}
+
+fn fallback_grep_search(query: &str, workspace_root: &str) -> String {
+    // Attempt to search for definitions using regex patterns: e.g., "fn query", "class query", etc.
+    let patterns = vec![
+        format!(r"\b(fn|class|struct|interface|enum|def|function)\s+{}\b", regex::escape(query)),
+        format!(r"\b{}\b\s*=", regex::escape(query)), // variable assignments
+    ];
+    
+    let mut regexes = Vec::new();
+    for pat in patterns {
+        if let Ok(re) = regex::Regex::new(&pat) {
+            regexes.push(re);
+        }
+    }
+    
+    // Add generic fallback if regexes is empty
+    if regexes.is_empty() {
+        if let Ok(re) = regex::Regex::new(&format!(r"\b{}\b", regex::escape(query))) {
+            regexes.push(re);
+        }
+    }
+
+    let mut results = Vec::new();
+    
+    fn grep_dir_fallback(
+        regexes: &[regex::Regex],
+        dir: &std::path::Path,
+        results: &mut Vec<String>,
+        depth: usize
+    ) -> Result<(), String> {
+        if depth > 5 || results.len() >= 20 { return Ok(()); }
+        let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+        for entry in entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with('.') || name == "node_modules" || name == "target" || name == "build" {
+                    continue;
+                }
+                let _ = grep_dir_fallback(regexes, &path, results, depth + 1);
+            } else if path.is_file() {
+                // Check extensions
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if !matches!(ext, "rs" | "js" | "jsx" | "ts" | "tsx" | "py" | "go" | "cpp" | "c" | "h" | "hpp") {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (i, line) in content.lines().enumerate() {
+                        for re in regexes {
+                            if re.is_match(line) {
+                                results.push(format!("File: {} | Line: {} | Content: {}", path.display(), i + 1, line.trim()));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let _ = grep_dir_fallback(&regexes, std::path::Path::new(workspace_root), &mut results, 0);
+
+    if results.is_empty() {
+        format!("No matches found for symbol '{}' using fallback search.", query)
+    } else {
+        format!("(Fallback Search Results for '{}'):\n{}", query, results.join("\n"))
     }
 }
 
@@ -1866,23 +2035,66 @@ pub async fn ai_chat_stream(
 
     // Stage 9: Multi-Agent Orchestrator delegation route (AUTO-TRIGGER)
     // Otomatis delegasikan ke orchestrator untuk tugas kompleks (RefactorFull, CodeReview, ArchDesign)
-    // Tidak perlu manual command 'orch_delegate' lagi
+    // atau jika kompleksitas (jumlah file/langkah) melebihi batas threshold yang dapat dikonfigurasi
     if let Some(ref decision) = routing_decision {
-        if matches!(decision.intent, 
+        let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
+        let root_str = workspace_root.as_deref().unwrap_or("");
+        let config = load_style_coding_config(root_str);
+        let multi_agent_steps_thresh = config.as_ref().and_then(|c| c.multi_agent_steps_threshold).unwrap_or(3);
+        let multi_agent_files_thresh = config.as_ref().and_then(|c| c.multi_agent_files_threshold).unwrap_or(2);
+
+        // Heuristically count files mentioned in prompt
+        let affected_files = {
+            let mut count = 0;
+            for word in prompt.split_whitespace() {
+                let clean_word = word.trim_matches(|c| c == ',' || c == '.' || c == '`' || c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}');
+                if clean_word.contains('.') && (
+                    clean_word.ends_with(".ts") || clean_word.ends_with(".js") || clean_word.ends_with(".svelte") || 
+                    clean_word.ends_with(".rs") || clean_word.ends_with(".toml") || clean_word.ends_with(".json") || 
+                    clean_word.ends_with(".py") || clean_word.ends_with(".go") || clean_word.ends_with(".html") || 
+                    clean_word.ends_with(".css")
+                ) {
+                    count += 1;
+                }
+            }
+            count
+        };
+
+        // Heuristically estimate plan steps from DAG or Chain engine
+        let plan_steps = if let Some(dag_plan) = super::chain_engine::DagPlan::from_intent(&decision.intent, &prompt) {
+            dag_plan.nodes.len()
+        } else if let Some(chain_plan) = super::chain_engine::ChainPlan::from_decision(decision, &prompt) {
+            chain_plan.nodes.len()
+        } else {
+            1
+        };
+
+        let is_complex_intent = matches!(decision.intent, 
             super::routing_engine::Intent::RefactorFull | 
             super::routing_engine::Intent::CodeReview |
-            super::routing_engine::Intent::ArchDesign)
-        {
+            super::routing_engine::Intent::ArchDesign
+        );
+
+        let should_delegate = is_complex_intent || plan_steps > multi_agent_steps_thresh || affected_files > multi_agent_files_thresh;
+
+        if should_delegate {
             use tauri::Manager;
             let role = match decision.intent {
                 super::routing_engine::Intent::CodeReview => super::agent_orch::SubAgentRole::CodeReviewer,
                 super::routing_engine::Intent::RefactorFull => super::agent_orch::SubAgentRole::Refactorer,
                 super::routing_engine::Intent::ArchDesign => super::agent_orch::SubAgentRole::Architect,
-                _ => super::agent_orch::SubAgentRole::CodeReviewer,
+                _ => super::agent_orch::SubAgentRole::Refactorer, // Default to Refactorer for large complex tasks
             };
             
-            let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
-            let _ = app.emit("ai:route_progress", "[Auto Mode] Complex intent detected. Delegating task to Multi-Agent Orchestrator...".to_string());
+            let trigger_reason = if is_complex_intent {
+                format!("intent {:?}", decision.intent)
+            } else if plan_steps > multi_agent_steps_thresh {
+                format!("steps count {} > threshold {}", plan_steps, multi_agent_steps_thresh)
+            } else {
+                format!("affected files count {} > threshold {}", affected_files, multi_agent_files_thresh)
+            };
+
+            let _ = app.emit("ai:route_progress", format!("[Auto Mode] High complexity detected ({}). Delegating task to Multi-Agent Orchestrator...", trigger_reason));
             
             let orch_state = app.state::<crate::modules::agent_orch::AgentOrchestrator>();
             
@@ -2841,7 +3053,8 @@ async fn run_chain(
     let mut total_input = 0u64;
     let mut total_output = 0u64;
     let mut total_cost_usd = 0.0f64;
-    let cost_budget = 0.05; // $0.05 max per chain
+    let config = workspace_root.and_then(|r| load_style_coding_config(r));
+    let cost_budget = config.as_ref().and_then(|c| c.cost_budget_limit).unwrap_or(0.05); // Configured budget limit or $0.05 default
 
     for (i, node) in plan.nodes.iter().enumerate() {
         let step_label = format!("[{}/{}] {}", i + 1, plan.len(), node.label);
@@ -2976,7 +3189,8 @@ async fn run_dag(
     let node_outputs: Arc<Mutex<HashMap<String, super::chain_engine::DagStepResult>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut total_input = 0u64;
     let mut total_output = 0u64;
-    let cost_budget = 0.05;
+    let config = workspace_root.and_then(|r| load_style_coding_config(r));
+    let cost_budget = config.as_ref().and_then(|c| c.cost_budget_limit).unwrap_or(0.05); // Configured budget limit or $0.05 default
 
     let total_nodes: usize = plan.nodes.len();
     let mut done_count = 0usize;

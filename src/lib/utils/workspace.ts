@@ -1,6 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
-import { addToast } from "$lib/stores.svelte";
+import { addToast, reviewFindings, isReviewing } from "$lib/stores.svelte";
 import { err } from "./helpers";
+
+// === TRIGGER FILE REVIEW ===
+export async function triggerFileReview(filePath: string, content: string) {
+  if (!filePath) return;
+  isReviewing.set(true);
+  try {
+    const findings = await invoke<any[]>("review_file", { filePath, content });
+    reviewFindings.set(findings);
+    const errors = findings.filter(f => f.severity === "Error" || f.severity === "error").length;
+    const warnings = findings.length - errors;
+    if (findings.length > 0) {
+      addToast(`Reviewed ${filePath.split(/[\\/]/).pop()}! Found ${errors} errors, ${warnings} warnings.`, "warning");
+    } else {
+      addToast("File reviewed. No issues found.", "success");
+    }
+  } catch (e) {
+    err("Auto-review failed for file:", e);
+  } finally {
+    isReviewing.set(false);
+  }
+}
+
 
 // === AUTO DETECT WORKSPACE ===
 export async function autoDetectWorkspace(dir: string, callbacks: {

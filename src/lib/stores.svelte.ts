@@ -86,6 +86,13 @@ export const fileEntries = writable<FileEntry[]>([]);
 export const currentDir = writable<string>("");
 export const workspaceFolders = writable<string[]>([]);
 
+// CMMO Global Integration Stores
+export const reviewFindings = writable<any[]>([]);
+export const isReviewing = writable<boolean>(false);
+export const graphStatus = writable<string>("Synced"); // "Synced", "Syncing", "Error"
+export const systemHealth = writable<any>({ ok: true, status: "Healthy" });
+export const costSummary = writable<any>({ total_cost: 0.0, limit: 0.0 });
+
 // Terminal state
 export const terminalSessions = writable<Map<string, any>>(new Map());
 export const activeTerminalSessionId = writable<string | null>(null);

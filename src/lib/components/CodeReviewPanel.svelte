@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { activeFile, fileContent, addToast } from "../stores.svelte";
+  import { activeFile, fileContent, addToast, reviewFindings, isReviewing } from "../stores.svelte";
+  import { triggerFileReview } from "$lib/utils/workspace";
 
   type ReviewFinding = {
     file: string;
@@ -14,9 +15,14 @@
   let currentFilePath = $derived($activeFile);
   let currentFileCode = $derived($fileContent);
 
-  let findings = $state<ReviewFinding[]>([]);
-  let isReviewing = $state(false);
-  let reviewSummary = $state({ total: 0, errors: 0, warnings: 0 });
+  let findings = $derived($reviewFindings);
+  let reviewing = $derived($isReviewing);
+  let reviewSummary = $derived({
+    total: $reviewFindings.length,
+    errors: $reviewFindings.filter(f => f.severity === "Error" || f.severity === "error" || (f.severity as any) === "Error").length,
+    warnings: $reviewFindings.length - $reviewFindings.filter(f => f.severity === "Error" || f.severity === "error" || (f.severity as any) === "Error").length
+  });
+
   let textToReview = $state("");
   let reviewMode = $state<"file" | "text">("file");
 
@@ -25,23 +31,7 @@
       addToast("No active file to review", "error");
       return;
     }
-    isReviewing = true;
-    findings = [];
-    try {
-      const res = await invoke<ReviewFinding[]>("review_file", {
-        filePath: currentFilePath,
-        content: currentFileCode
-      });
-      findings = res;
-      const errors = res.filter(f => f.severity === "Error" || (f.severity as any) === "Error").length;
-      const warnings = res.length - errors;
-      reviewSummary = { total: res.length, errors, warnings };
-      addToast(`Reviewed ${currentFilePath.split(/[\\/]/).pop()}! Found ${res.length} issues.`, "success");
-    } catch (e) {
-      addToast("Failed to review file: " + String(e), "error");
-    } finally {
-      isReviewing = false;
-    }
+    await triggerFileReview(currentFilePath, currentFileCode);
   }
 
   async function runTextReview() {
@@ -49,8 +39,8 @@
       addToast("Please enter code text to review", "error");
       return;
     }
-    isReviewing = true;
-    findings = [];
+    isReviewing.set(true);
+    reviewFindings.set([]);
     try {
       const res = await invoke<{
         findings: ReviewFinding[];
@@ -58,13 +48,12 @@
         errors: number;
         warnings: number;
       }>("review_text", { text: textToReview });
-      findings = res.findings;
-      reviewSummary = { total: res.total, errors: res.errors, warnings: res.warnings };
+      reviewFindings.set(res.findings);
       addToast(`Code block review finished! Found ${res.total} issues.`, "success");
     } catch (e) {
       addToast("Failed to review text: " + String(e), "error");
     } finally {
-      isReviewing = false;
+      isReviewing.set(false);
     }
   }
 
@@ -90,15 +79,15 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <div><span class="cr-label">Active File</span><span class="cr-fname">{currentFilePath ? currentFilePath.split(/[\\/]/).pop() : "No file opened"}</span></div>
       </div>
-      <button class="cr-btn cr-btn-p" onclick={runFileReview} disabled={isReviewing || !currentFilePath}>
-        {isReviewing ? 'Reviewing...' : 'Run Review'}
+      <button class="cr-btn cr-btn-p" onclick={runFileReview} disabled={reviewing || !currentFilePath}>
+        {reviewing ? 'Reviewing...' : 'Run Review'}
       </button>
     </div>
   {:else}
     <div class="cr-text">
       <textarea bind:value={textToReview} rows={4} placeholder="Paste code to review..."></textarea>
-      <button class="cr-btn cr-btn-p" style="align-self:flex-end" onclick={runTextReview} disabled={isReviewing || !textToReview.trim()}>
-        {isReviewing ? 'Reviewing...' : 'Review Code'}
+      <button class="cr-btn cr-btn-p" style="align-self:flex-end" onclick={runTextReview} disabled={reviewing || !textToReview.trim()}>
+        {reviewing ? 'Reviewing...' : 'Review Code'}
       </button>
     </div>
   {/if}
@@ -125,7 +114,7 @@
         </div>
       {/each}
     </div>
-  {:else if !isReviewing}
+  {:else if !reviewing}
     <div class="cr-empty">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
       <p>No review results yet.</p>

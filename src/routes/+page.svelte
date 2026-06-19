@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -25,7 +26,10 @@
   import MQTTClient from "$lib/components/MQTTClient.svelte";
   import DatabaseClient from "$lib/components/DatabaseClient.svelte";
   import SSHExplorer from "$lib/components/SSHExplorer.svelte";
-  import { currentDir, addToast, aiSendRequest, activeSshProfile, activeFile, fileContent, type Agent } from "$lib/stores.svelte";
+  import { 
+    currentDir, addToast, aiSendRequest, activeSshProfile, activeFile, fileContent, type Agent,
+    reviewFindings, isReviewing, graphStatus, systemHealth, costSummary
+  } from "$lib/stores.svelte";
   import { onMount } from "svelte";
   import { getStoredTheme, getStoredFont, applyTheme, applyFont } from "$lib/themes";
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
@@ -138,6 +142,15 @@
   let showFloatingRunner = $state(false);
   let showLogs = $state(false);
 
+  // CMMO Global Reactive States
+  let activeFramework = $state("Unknown");
+  let isIndexingGraph = $state(false);
+  let indexProgress = $state(0);
+  let indexCurrentIndex = $state(0);
+  let indexTotalFiles = $state(0);
+  let indexCurrentFile = $state("");
+  let agentSwarmStatus = $state("Idle");
+
   // ─── Primary CWD (from terminal) ──────────────
   let primaryCwd = $state("");
   let activeFilePath = $state("");
@@ -145,7 +158,7 @@
   let projectDetected = $state<string | null>(null);
   
   // Import auto-detect functions
-  import { autoDetectWorkspace, autoLoadIntel, autoRunReview } from "$lib/utils/workspace";
+  import { autoDetectWorkspace, autoLoadIntel, autoRunReview, triggerFileReview } from "$lib/utils/workspace";
 
   // ─── App Logs ─────────────────────────────────
   let logs = $state<{ time: string; msg: string; type: string }[]>([]);
@@ -367,15 +380,188 @@
     return unsub;
   });
 
+  function throttle<T extends (...args: any[]) => void>(func: T, limit: number): T {
+    let inThrottle = false;
+    return function(this: any, ...args: any[]) {
+      if (!inThrottle) {
+        func.apply(this, args);
+        inThrottle = true;
+        setTimeout(() => inThrottle = false, limit);
+      }
+    } as any;
+  }
+
+  $effect(() => {
+    let unlistenStart: any = null;
+    let unlistenProgress: any = null;
+    let unlistenEnd: any = null;
+    let unlistenStatus: any = null;
+    let unlistenBudget: any = null;
+    let unlistenSwarm: any = null;
+
+    const throttledProgress = throttle((data: any) => {
+      indexProgress = data.progress;
+      indexCurrentFile = data.current_file;
+      indexTotalFiles = data.total_files;
+      indexCurrentIndex = data.current_index;
+      
+      // Log progress periodically to avoid UI render lag and log spam
+      if (data.current_index === 1 || data.current_index === data.total_files || Math.round(data.progress) % 20 === 0) {
+        const fn = data.current_file.split(/[/\\]/).pop() || data.current_file;
+        addLog(`[Graph Sync] Indexing progress: ${Math.round(data.progress)}% [${fn}] (${data.current_index}/${data.total_files})`, "info");
+      }
+    }, 200);
+
+    async function setupListeners() {
+      unlistenStart = await listen<number>("graph:index_start", (event) => {
+        isIndexingGraph = true;
+        indexTotalFiles = event.payload;
+        indexProgress = 0;
+        indexCurrentIndex = 0;
+        indexCurrentFile = "Analyzing files...";
+        graphStatus.set("Syncing");
+        addLog(`Started indexing workspace: ${event.payload} files found.`, "info");
+      });
+
+      unlistenProgress = await listen<any>("graph:index_progress", (event) => {
+        isIndexingGraph = true;
+        throttledProgress(event.payload);
+      });
+
+      unlistenEnd = await listen<number>("graph:index_end", (event) => {
+        isIndexingGraph = false;
+        indexProgress = 100;
+        graphStatus.set("Synced");
+        addLog(`Workspace indexing finished. Indexed ${event.payload} symbols.`, "success");
+        addToast(`Workspace indexed: ${event.payload} symbols found`, "success");
+      });
+
+      unlistenStatus = await listen<string>("graph:status", (event) => {
+        graphStatus.set(event.payload);
+        addLog(`[Graph Sync] Knowledge graph status: ${event.payload}`, "info");
+      });
+
+      unlistenBudget = await listen<any>("ai:budget_warning", (event) => {
+        addToast(event.payload.message, "warning");
+        costSummary.set(event.payload.cost || { total_cost: 0.0, limit: 0.0 });
+        addLog(`[Budget Warning] ${event.payload.message}`, "warning");
+      });
+
+      unlistenSwarm = await listen<any>("ai:agent_swarm_status", (event) => {
+        agentSwarmStatus = event.payload.status || "Idle";
+        addLog(`[Agent Swarm] ${event.payload.status}: ${event.payload.detail || ""}`, "info");
+      });
+    }
+
+    setupListeners();
+
+    return () => {
+      if (unlistenStart) unlistenStart();
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenEnd) unlistenEnd();
+      if (unlistenStatus) unlistenStatus();
+      if (unlistenBudget) unlistenBudget();
+      if (unlistenSwarm) unlistenSwarm();
+    };
+  });
+
+  // Proactive background diagnostics polling
+  $effect(() => {
+    const updateStats = async () => {
+      try {
+        const health = await invoke<any>("heal_check_startup");
+        systemHealth.set(health || { ok: true, status: "Healthy" });
+      } catch (e) {
+        systemHealth.set({ ok: false, status: "Check failed" });
+      }
+      try {
+        const summary = await invoke<any>("cost_get_summary");
+        costSummary.set(summary || { total_cost: 0.0, limit: 0.0 });
+      } catch (e) {
+        console.warn("Failed to get cost summary:", e);
+      }
+    };
+    
+    updateStats();
+    const interval = setInterval(updateStats, 30000); // Poll every 30s
+    return () => clearInterval(interval);
+  });
+
   import { ensureNyxDir } from "$lib/nyxConfig";
   $effect(() => {
     const unsub = currentDir.subscribe(async (val) => {
       if (val) {
         await ensureNyxDir();
-        // Notify AI backend of workspace root for agent logs
+        // 1. Notify AI backend of workspace root for agent logs
         invoke("ai_set_workspace", { root: val }).catch(() => {});
-        invoke("project_detect", { root: val }).catch(() => {});
         showLogs = true;
+
+        // 2. Proactively detect project framework
+        addLog(`Detecting framework for: ${val}...`, "info");
+        try {
+          const detected = await invoke<any>("project_detect", { root: val });
+          if (detected && detected.framework) {
+            let label = detected.framework;
+            if (detected.framework === "RustCargo") label = "Rust/Cargo";
+            else if (detected.framework === "NodeNpm") label = "Node.js (npm)";
+            else if (detected.framework === "NodeYarn") label = "Node.js (yarn)";
+            else if (detected.framework === "PythonPoetry") label = "Python (Poetry)";
+            else if (detected.framework === "PythonPip") label = "Python (pip)";
+            else if (detected.framework === "GoMod") label = "Go";
+            else if (detected.framework === "PlatformIO") label = "PlatformIO";
+            else if (detected.framework === "Docker") label = "Docker";
+            activeFramework = label;
+            addLog(`Project detected: ${label}`, "success");
+            addToast(`Project detected: ${label}`, "success");
+          } else {
+            activeFramework = "Unknown";
+            addLog("No specific project framework detected.", "info");
+          }
+        } catch (e) {
+          err("Framework detection failed:", e);
+          activeFramework = "Unknown";
+        }
+
+        // 3. Auto-load or Auto-index the symbol graph
+        addLog("Loading workspace symbol graph...", "info");
+        graphStatus.set("Syncing");
+        try {
+          const exists = await invoke<boolean>("graph_load_workspace", { root: val });
+          if (exists) {
+            graphStatus.set("Synced");
+            addLog("Loaded existing symbol graph successfully.", "success");
+            addToast("Symbol graph loaded", "info");
+          } else {
+            addLog("No existing symbol graph found. Auto-indexing in progress...", "info");
+            invoke("graph_index_workspace", { root: val }).catch((e) => {
+              err("Auto-indexing failed to start:", e);
+              addLog(`Auto-indexing failed: ${e}`, "error");
+              graphStatus.set("Error");
+            });
+          }
+        } catch (e) {
+          err("Workspace load/indexing check failed:", e);
+          graphStatus.set("Error");
+        }
+
+        // 4. Start file watcher automatically for incremental live updates
+        try {
+          await invoke("graph_watch", { root: val });
+          addLog("File watcher started. Symbols will sync live on file edits.", "info");
+        } catch (e) {
+          err("Failed to start file watcher:", e);
+        }
+
+        // 5. Trigger an initial background code review for the workspace
+        addLog("Running initial static code review...", "info");
+        try {
+          const res = await invoke<any>("review_text", { text: "" });
+          if (res && res.findings) {
+            reviewFindings.set(res.findings);
+          }
+        } catch (e) {
+          err("Initial review check failed:", e);
+        }
       }
     });
     return unsub;
@@ -1073,6 +1259,15 @@
       <button class="sb-btn" class:active={showFloatingRunner} onclick={() => { showFloatingRunner = !showFloatingRunner; if (showFloatingRunner) showFloatingAi = false; }} title="Runner Panel" style="margin-right: 6px;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="6 3 20 12 6 21 6 3"/></svg>
       </button>
+
+      {#if activeFramework && activeFramework !== "Unknown"}
+        <span class="sb-framework-tag" title="Project Framework: {activeFramework}">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 3px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          {activeFramework}
+        </span>
+        <span class="path-sep" style="margin: 0 4px; color: var(--text-muted); opacity: 0.5;">|</span>
+      {/if}
+
       {#if primaryCwd}
         <div class="path-breadcrumb">
           {#each primaryCwd.split("\\") as seg, i}
@@ -1083,6 +1278,21 @@
       {:else}
         <span class="sb-muted">No directory</span>
       {/if}
+
+      {#if primaryCwd}
+        <span class="path-sep" style="margin: 0 4px; color: var(--text-muted); opacity: 0.5;">|</span>
+        <span class="sb-graph-status" class:sb-graph-synced={$graphStatus === 'Synced'} class:sb-graph-syncing={$graphStatus === 'Syncing'} class:sb-graph-error={$graphStatus === 'Error'} title="Knowledge Graph Status: {$graphStatus}">
+          <span class="status-dot"></span>
+          Graph: {$graphStatus}
+        </span>
+      {/if}
+
+      {#if isIndexingGraph}
+        <div class="sb-indexing-bar" title="Indexing file: {indexCurrentFile}">
+          <span class="sb-spinner"></span>
+          <span>Indexing: {Math.round(indexProgress)}% ({indexCurrentIndex}/{indexTotalFiles})</span>
+        </div>
+      {/if}
     </div>
 
     <div class="sb-center" onclick={() => (showLogs = !showLogs)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (showLogs = !showLogs)} title="Toggle logs">
@@ -1091,6 +1301,23 @@
     </div>
 
     <div class="sb-right">
+      {#if agentSwarmStatus && agentSwarmStatus !== "Idle"}
+        <span class="sb-swarm-badge" title="Agent Swarm Status: {agentSwarmStatus}">
+          <span class="swarm-pulse"></span>
+          🤖 Swarm: {agentSwarmStatus}
+        </span>
+      {/if}
+
+      {#if $costSummary && $costSummary.limit > 0}
+        <span class="sb-budget-badge" class:sb-budget-high={$costSummary.total_cost >= $costSummary.limit * 0.9} title="Total Cost: ${$costSummary.total_cost.toFixed(4)} / Limit: ${$costSummary.limit.toFixed(2)}">
+          💰 ${$costSummary.total_cost.toFixed(3)}
+        </span>
+      {/if}
+
+      <span class="sb-health-badge" class:sb-health-degraded={!$systemHealth.ok} onclick={() => { sidebarView = "files"; workspaceMode = "explorer"; activeTabId = "tab-settings"; let hasSettings = tabs.some(t => t.id === "tab-settings"); if (!hasSettings) { tabs = [...tabs, { id: "tab-settings", type: "settings", label: "Settings" }]; } }} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (activeTabId = "tab-settings")} title="System Health: {$systemHealth.status || 'Healthy'}">
+        {$systemHealth.ok ? '❤️' : '💔'} Health
+      </span>
+
       {#if degradedCount > 0}
         <button type="button" class="sb-degraded-badge" onclick={() => { sidebarView = "files"; workspaceMode = "explorer"; activeTabId = "tab-settings"; let hasSettings = tabs.some(t => t.id === "tab-settings"); if (!hasSettings) { tabs = [...tabs, { id: "tab-settings", type: "settings", label: "Settings" }]; } }} style="background: var(--accent-red); color: white; padding: 2px 6px; border: none; border-radius: 4px; font-weight: bold; margin-right: 8px; font-size: var(--fs-9); cursor: pointer; display: inline-flex; align-items: center; gap: 4px;" title="{degradedCount} component(s) degraded/down. Click to open Settings.">
           ⚠️ {degradedCount} DEGRADED
@@ -1515,6 +1742,159 @@
     100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
   }
   .sb-degraded-badge {
+    animation: pulse-red 2s infinite;
+  }
+
+  /* CMMO Status Bar Integrations */
+  .sb-framework-tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--fs-9);
+    font-weight: 700;
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent);
+    padding: 1.5px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+  }
+  .sb-graph-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--fs-9);
+    font-weight: 600;
+    padding: 1.5px 6px;
+    border-radius: 4px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .sb-graph-synced {
+    color: var(--accent-green);
+    border-color: color-mix(in srgb, var(--accent-green) 20%, transparent);
+    background: color-mix(in srgb, var(--accent-green) 5%, transparent);
+  }
+  .sb-graph-synced .status-dot {
+    background: var(--accent-green);
+    box-shadow: 0 0 6px var(--accent-green);
+  }
+  .sb-graph-syncing {
+    color: var(--accent-yellow);
+    border-color: color-mix(in srgb, var(--accent-yellow) 20%, transparent);
+    background: color-mix(in srgb, var(--accent-yellow) 5%, transparent);
+  }
+  .sb-graph-syncing .status-dot {
+    background: var(--accent-yellow);
+    animation: statusPulse 1.2s infinite ease-in-out;
+  }
+  .sb-graph-error {
+    color: var(--accent-red);
+    border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
+    background: color-mix(in srgb, var(--accent-red) 5%, transparent);
+  }
+  .sb-graph-error .status-dot {
+    background: var(--accent-red);
+  }
+  @keyframes statusPulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+  .sb-indexing-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-9);
+    font-weight: 600;
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 25%, transparent);
+    padding: 1.5px 7px;
+    border-radius: 4px;
+    margin-left: 8px;
+    animation: indexingPulse 2.5s infinite ease-in-out;
+  }
+  @keyframes indexingPulse {
+    0%, 100% { border-color: color-mix(in srgb, var(--accent-blue) 20%, transparent); }
+    50% { border-color: color-mix(in srgb, var(--accent-blue) 50%, transparent); box-shadow: 0 0 8px color-mix(in srgb, var(--accent-blue) 15%, transparent); }
+  }
+  .sb-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--border-subtle);
+    border-top-color: var(--accent-blue);
+    border-radius: 50%;
+    animation: pioSpin 0.8s linear infinite;
+  }
+  .sb-swarm-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--fs-9);
+    font-weight: 600;
+    color: var(--accent-purple, #c084fc);
+    background: color-mix(in srgb, var(--accent-purple, #c084fc) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-purple, #c084fc) 20%, transparent);
+    padding: 1.5px 6px;
+    border-radius: 4px;
+    margin-right: 4px;
+  }
+  .swarm-pulse {
+    width: 5px;
+    height: 5px;
+    background: var(--accent-purple, #c084fc);
+    border-radius: 50%;
+    animation: statusPulse 1s infinite ease-in-out;
+  }
+  .sb-budget-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--fs-9);
+    font-weight: 700;
+    color: var(--accent-green);
+    background: color-mix(in srgb, var(--accent-green) 8%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-green) 20%, transparent);
+    padding: 1.5px 6px;
+    border-radius: 4px;
+    margin-right: 4px;
+    font-family: monospace;
+  }
+  .sb-budget-badge.sb-budget-high {
+    color: var(--accent-red);
+    background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+    border-color: color-mix(in srgb, var(--accent-red) 25%, transparent);
+    animation: pulse-red 1.5s infinite;
+  }
+  .sb-health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: var(--fs-9);
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    padding: 1.5px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-right: 4px;
+  }
+  .sb-health-badge:hover {
+    border-color: var(--accent-red);
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--accent-red) 4%, transparent);
+  }
+  .sb-health-badge.sb-health-degraded {
+    color: var(--accent-red);
+    border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
+    background: color-mix(in srgb, var(--accent-red) 8%, transparent);
     animation: pulse-red 2s infinite;
   }
 </style>

@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getDefaultIconSvg } from "$lib/icon-overrides";
+  import { triggerFileReview } from "$lib/utils/workspace";
+
 
   let {
     filePath = $bindable(""),
@@ -91,6 +93,7 @@
       isDirty = false;
       onDirtyChange(false);
       onSave(filePath, currentContent);
+      triggerFileReview(filePath, currentContent).catch(console.error);
     } catch (e: any) {
       console.error("Save failed:", e);
     }
