@@ -161,6 +161,7 @@
   onMount(() => {
     cleanupConsole = createLogger(addLog);
     addLog("App started");
+    showLogs = true;
     
     return () => {
       if (cleanupConsole) cleanupConsole();
@@ -374,6 +375,7 @@
         // Notify AI backend of workspace root for agent logs
         invoke("ai_set_workspace", { root: val }).catch(() => {});
         invoke("project_detect", { root: val }).catch(() => {});
+        showLogs = true;
       }
     });
     return unsub;
