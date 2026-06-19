@@ -1,8 +1,8 @@
-﻿use futures::StreamExt;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::oneshot;
 use tauri::{Emitter, Manager};
 use chrono::Utc;
@@ -253,13 +253,14 @@ impl AiManager {
             self.warm_cache(app);
             
             // Stage 5: Auto-load Knowledge Graph (lazy load on first use)
-            if let Some(graph_state) = app.try_state::<crate::modules::graph::SymbolGraph>() {
+            if let Some(graph_state) = app.try_state::<crate::modules::graph::GraphState>() {
                 let _ = graph_state.ensure_loaded();
             }
             
             // Stage 6: Auto-detect Project Intel
             if let Some(intel_state) = app.try_state::<crate::modules::project_intel::ProjectIntelState>() {
-                if let Some(root) = self.workspace_root.lock().unwrap().clone() {
+                let root = self.workspace_root.lock().unwrap().clone();
+                if !root.is_empty() {
                     let ctx = intel_state.detect(&root);
                     let _ = app.emit("nyx:project_detected", serde_json::json!({
                         "framework": ctx.framework_label(),
@@ -270,6 +271,17 @@ impl AiManager {
                         "file_count": ctx.file_count,
                         "src_dirs": ctx.src_dirs,
                     }));
+                }
+            }
+
+            // Stage 11: Auto Self-Healing on Startup (Restore degraded components after a crash)
+            if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                if super::self_heal::has_crash_marker(app) {
+                    log::warn!("Previous session crashed! Auto-healing degraded components...");
+                    for comp in &["graph", "sessions", "providers", "chain", "ai", "project_intel"] {
+                        let _ = heal.heal_component(comp);
+                    }
+                    super::self_heal::clear_crash_marker(app);
                 }
             }
         }
@@ -1674,6 +1686,16 @@ pub async fn ai_chat_stream(
         use tauri::Manager;
         let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
         let intel_state = app.state::<crate::modules::project_intel::ProjectIntelState>();
+        
+        // Stage 6: Auto-detect Project Intel on routing if not already cached
+        if intel_state.get().is_err() {
+            if let Some(ref root) = workspace_root {
+                if !root.is_empty() {
+                    let _ = intel_state.detect(root);
+                }
+            }
+        }
+        
         let decision = if let Ok(ctx) = intel_state.get() {
             engine.route_with_context(last_message, &ctx)
         } else {
@@ -1801,8 +1823,30 @@ pub async fn ai_chat_stream(
                     Ok(output) => {
                         state.write_agent_log(&agent.id, &agent.name,
                             &format!("EXTERNAL AGENT {}: returned {} chars", agent_name, output.len()));
+                        // Stage 7: Auto Code Review on generated content
+                        let mut final_content = output.clone();
+                        if let Some(review_state) = app.try_state::<super::review::ReviewState>() {
+                            if let Ok(engine) = review_state.engine.lock() {
+                                let review_res = engine.review_text(&output);
+                                if review_res.total > 0 {
+                                    final_content.push_str("\n\n---\n### 🔍 Auto Code Review\n");
+                                    for f in review_res.findings {
+                                        let sev_icon = match f.severity {
+                                            super::review::ReviewSeverity::Error => "🔴 Error",
+                                            super::review::ReviewSeverity::Warning => "⚠️ Warning",
+                                            super::review::ReviewSeverity::Info => "ℹ️ Info",
+                                        };
+                                        final_content.push_str(&format!(
+                                            "- **{}** ({}): {} [line {}]\n  *Suggestion:* {}\n",
+                                            sev_icon, f.rule_id, f.message, f.line, f.suggestion
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+
                         let _ = app.emit("ai:done", AiStreamDone {
-                            content: output,
+                            content: final_content,
                             provider: agent.provider.clone(),
                             model: format!("external:{}", agent_name),
                             input_tokens: 0,
@@ -1856,7 +1900,7 @@ pub async fn ai_chat_stream(
                 }
                 Err(e) => {
                     let err_msg = format!("Orchestrator delegation failed: {}. Falling back to single-agent execution.", e);
-                    log("AI", &err_msg);
+                    log::warn!("{}", err_msg);
                     let _ = app.emit("ai:route_progress", err_msg);
                     // Lanjut ke fallback logic (DAG atau Single Model)
                 }
@@ -2001,8 +2045,30 @@ pub async fn ai_chat_stream(
                 state.write_agent_log(&agent.id, &agent.name,
                     &format!("DONE input_tokens={} output_tokens={} cost=${:.5}", input_tokens, output_tokens, cost));
 
+                // Stage 7: Auto Code Review on generated content containing code blocks
+                let mut final_content = content.clone();
+                if let Some(review_state) = app.try_state::<super::review::ReviewState>() {
+                    if let Ok(engine) = review_state.engine.lock() {
+                        let review_res = engine.review_text(&content);
+                        if review_res.total > 0 {
+                            final_content.push_str("\n\n---\n### 🔍 Auto Code Review\n");
+                            for f in review_res.findings {
+                                let sev_icon = match f.severity {
+                                    super::review::ReviewSeverity::Error => "🔴 Error",
+                                    super::review::ReviewSeverity::Warning => "⚠️ Warning",
+                                    super::review::ReviewSeverity::Info => "ℹ️ Info",
+                                };
+                                final_content.push_str(&format!(
+                                    "- **{}** ({}): {} [line {}]\n  *Suggestion:* {}\n",
+                                    sev_icon, f.rule_id, f.message, f.line, f.suggestion
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 let _ = app.emit("ai:done", AiStreamDone {
-                    content,
+                    content: final_content,
                     provider: agent.provider.clone(),
                     model: agent.model.clone(),
                     input_tokens,
@@ -2976,6 +3042,8 @@ async fn run_dag(
                     return (node.id.clone(), super::chain_engine::DagStepResult {
                         node_id: node.id.clone(), output: String::new(), success: false,
                         error: Some(format!("No base URL for provider '{}'", step_agent.provider)),
+                        inp_tokens: 0,
+                        out_tokens: 0,
                     });
                 }
 

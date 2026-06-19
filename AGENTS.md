@@ -87,17 +87,17 @@
 | **3** Chaining | ✅ `chain_engine.rs`, `run_chain()` | ✅ `ai-proc` compact bar (AIChat.svelte) | ✅ Ya — kalau routing bikin chain plan |
 | **4** SQLite | ✅ `sessions.rs` SQLite rewrite, 4 commands | ✅ Session list/save/load | ✅ Ya — tiap chat pake database |
 | **5** Knowledge Graph | ✅ `symbol_graph.rs`, `parsers.rs`, file watcher | ❌ 12 commands registered | 🔶 Parsial — search/query lazy-loaded (hanya di-load ke RAM saat query pertama), `graph_unload_workspace` unloads RAM |
-| **6** Project Intel | ✅ `project_intel.rs`, framework detection | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `project_detect` dulu |
-| **7** Review | ✅ `review.rs`, 3 rules | ❌ 2 commands | 🔶 Tidak otomatis — perlu panggil `review_text` manual |
+| **6** Project Intel | ✅ `project_intel.rs`, framework detection | ❌ 2 commands | ✅ Ya — otomatis dijalankan di routing loop jika context belum di-load |
+| **7** Review | ✅ `review.rs`, 3 rules | ❌ 2 commands | ✅ Ya — otomatis menjalankan aturan tinjauan statis pada setiap kode yang dihasilkan model |
 | **8** Multi-Model | ✅ `provider_stats.rs`, CircuitBreaker | ❌ 2 commands | ✅ Ya — circuit breaker aktif di fallback loop |
-| **9** Multi-Agent | ✅ `agent_orch.rs`, 3 sub-agents | ❌ 4 commands | 🔶 Tidak otomatis — perlu panggil `orch_delegate` |
+| **9** Multi-Agent | ✅ `agent_orch.rs`, 3 sub-agents | ❌ 4 commands | ✅ Ya — otomatis mendelegasikan tugas kompleks (Refactor, Review, Arch) |
 | **10** DAG | ✅ `DagPlan`, `run_dag()` parallel tokio | ❌ | 🔶 Routing prioritaskan DAG untuk RefactorFull/CodeReview |
-| **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ❌ 2 commands | 🔶 `report_degraded()` dipanggil di error path, frontend perlu `get_status` |
+| **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ❌ 2 commands | ✅ Ya — otomatis memulihkan komponen yang rusak saat startup ketika mendeteksi crash marker |
 | **12** Performance & DX | ✅ Cache warming, crash marker, startup health check, mimalloc allocator | ❌ `heal_check_startup`, `heal_clear_crash_marker` | ✅ Cache warm di `ensure_loaded`, crash marker di startup, mimalloc global allocator |
 | **13** RAG Conversation Memory | ✅ `context.rs` — compression, cross-session retrieval | ❌ | ✅ Compression aktif di `ai_chat_stream` (OnceLock) |
-| **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ❌ 3 commands | 🔶 Routing preferensi, belum auto-dipanggil |
+| **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ❌ 3 commands | ✅ Ya — otomatis memilih model termurah dalam satu reasoning tier (budget constraint routing) |
 
-**Kesimpulan**: Backend 100%, frontend masih banyak yang belum di-Svelte-in. Yang benar-benar aktif end-to-end: Stage 1, 2, 3, 4, 8, 12, 13 (partial). Sisanya (5, 6, 7, 9, 10, 11, 14) jalan di Rust tapi belum punya UI / trigger otomatis penuh. Lazy loading symbol graph (Stage 5) and mimalloc allocator keep NyxEdit's RAM footprint low.
+**Kesimpulan**: Backend 100% aktif, frontend masih ada beberapa kontrol manual yang belum di-Svelte-in. Yang benar-benar aktif end-to-end secara otomatis di alur utama (main flow): Stage 1, 2, 3, 4, 6, 7, 8, 9 (auto-delegate), 11, 12, 13, dan 14. Lazy loading symbol graph (Stage 5) dan mimalloc allocator menjaga penggunaan RAM NyxEdit tetap rendah.
 
 ### Rust files added (Stage 1–14)
 - `src-tauri/models.toml` — compiled-in model definitions
