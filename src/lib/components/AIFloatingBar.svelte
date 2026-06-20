@@ -6,7 +6,7 @@
   let attachedFiles = $state<string[]>([]);
   let selectedAgentId = $state("auto");
   let agentList = $state<{ id: string; label: string }[]>([]);
-  let isDragging = $state(false);
+  let isFileDragging = $state(false);
 
   let allFiles = $state<any[]>([]);
   let showMentionDropdown = $state(false);
@@ -17,6 +17,14 @@
 
   let pendingPaste = $state<string | null>(null);
   let pasteConfirmVisible = $state(false);
+
+  let posX = $state(typeof window !== "undefined" ? Math.round(window.innerWidth / 2 - 240) : 400);
+  let posY = $state(typeof window !== "undefined" ? window.innerHeight - 130 : 600);
+  let isDraggingBar = $state(false);
+  let dragStartX = $state(0);
+  let dragStartY = $state(0);
+  let dragInitX = $state(0);
+  let dragInitY = $state(0);
 
   $effect(() => {
     const unsubscribe = agents.subscribe(list => {
@@ -37,40 +45,36 @@
 
   $effect(() => {
     let active = true;
-    let unlistenFns: UnlistenFn[] = [];
+    let listenPromises: Promise<UnlistenFn>[] = [];
 
-    async function setup() {
-      const enter = await listen("tauri://drag-enter", () => {
-        if (active) isDragging = true;
-      });
-      unlistenFns.push(enter);
+    const pEnter = listen("tauri://drag-enter", () => {
+      if (active) isFileDragging = true;
+    });
+    listenPromises.push(pEnter);
 
-      const leave = await listen("tauri://drag-leave", () => {
-        if (active) isDragging = false;
-      });
-      unlistenFns.push(leave);
+    const pLeave = listen("tauri://drag-leave", () => {
+      if (active) isFileDragging = false;
+    });
+    listenPromises.push(pLeave);
 
-      const drop = await listen("tauri://drag-drop", (event: any) => {
-        if (active) {
-          isDragging = false;
-          if (event.payload && event.payload.paths) {
-            for (const path of event.payload.paths) {
-              if (path && !attachedFiles.includes(path)) {
-                attachedFiles = [...attachedFiles, path];
-              }
+    const pDrop = listen("tauri://drag-drop", (event: any) => {
+      if (active) {
+        isFileDragging = false;
+        if (event.payload && event.payload.paths) {
+          for (const path of event.payload.paths) {
+            if (path && !attachedFiles.includes(path)) {
+              attachedFiles = [...attachedFiles, path];
             }
           }
         }
-      });
-      unlistenFns.push(drop);
-    }
-
-    setup();
+      }
+    });
+    listenPromises.push(pDrop);
 
     return () => {
       active = false;
-      for (const fn of unlistenFns) {
-        fn();
+      for (const p of listenPromises) {
+        p.then(fn => fn());
       }
     };
   });
@@ -78,6 +82,33 @@
   let filteredFiles = $derived(
     allFiles.filter(f => !f.is_dir && f.name.toLowerCase().includes(mentionQuery.toLowerCase()))
   );
+
+  $effect(() => {
+    if (!isDraggingBar) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      posX = Math.max(0, dragInitX + (e.clientX - dragStartX));
+      posY = Math.max(0, dragInitY + (e.clientY - dragStartY));
+    };
+    const handleMouseUp = () => {
+      isDraggingBar = false;
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  });
+
+  function onBarMouseDown(e: MouseEvent) {
+    const target = e.target as HTMLElement;
+    if (target.closest("textarea, select, button, input")) return;
+    isDraggingBar = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragInitX = posX;
+    dragInitY = posY;
+  }
 
   function removeAttachedFile(index: number) {
     attachedFiles = attachedFiles.filter((_, i) => i !== index);
@@ -205,19 +236,19 @@
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    isDragging = true;
+    isFileDragging = true;
   }
 
   function handleDragLeave(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    isDragging = false;
+    isFileDragging = false;
   }
 
   function handleDrop(e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    isDragging = false;
+    isFileDragging = false;
     if (e.dataTransfer && e.dataTransfer.files) {
       const filesList = Array.from(e.dataTransfer.files);
       for (const file of filesList) {
@@ -275,16 +306,13 @@
   }
 </script>
 
-<div 
-  class="ai-floating-bar-wrapper"
-  class:is-dragging={isDragging}
-  ondragover={handleDragOver}
-  ondragleave={handleDragLeave}
-  ondrop={handleDrop}
+<div
+  class="ai-floating-bar-outer"
+  style="left: {posX}px; top: {posY}px;"
   role="region"
-  aria-label="File drop zone"
+  aria-label="AI floating input"
 >
-  {#if isDragging}
+  {#if isFileDragging}
     <div class="drag-overlay">
       <div class="drag-overlay-content">
         <svg class="drag-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -292,27 +320,20 @@
           <polyline points="17 8 12 3 7 8"/>
           <line x1="12" y1="3" x2="12" y2="15"/>
         </svg>
-        <span>Drop files to attach to chat context</span>
+        <span>Drop files to attach</span>
       </div>
     </div>
   {/if}
-  {#if showMentionDropdown && filteredFiles.length > 0}
-    <div class="mention-dropdown">
-      {#each filteredFiles as file, index}
-        <button
-          class="mention-item"
-          class:active={index === selectedMentionIndex}
-          onclick={() => insertMention(file.path)}
-        >
-          <span class="mention-icon">📄</span>
-          <span class="mention-name">{file.name}</span>
-          <span class="mention-path">{file.path}</span>
-        </button>
-      {/each}
-    </div>
-  {/if}
 
-  <div class="ai-floating-bar" class:active-focus={isSelectFocused}>
+  <div
+    class="ai-floating-bar"
+    class:active-focus={isSelectFocused}
+    class:is-dragging={isDraggingBar}
+    onmousedown={onBarMouseDown}
+    ondragover={handleDragOver}
+    ondragleave={handleDragLeave}
+    ondrop={handleDrop}
+  >
     {#if attachedFiles.length > 0}
       <div class="attached-files-container">
         {#each attachedFiles as file, index}
@@ -325,11 +346,7 @@
     {/if}
 
     {#if pasteConfirmVisible}
-      <div class="pc-bar" role="alert">
-        <svg class="pc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
-          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-        </svg>
+      <div class="pc-bar" role="alert" onclick={confirmPaste}>
         <span class="pc-text">Paste ~{pendingPaste?.split('\n').length || 0} lines</span>
         <span class="pc-hint">
           <span class="pc-key">Enter</span> paste
@@ -339,18 +356,16 @@
     {/if}
 
     <div class="floating-bar-content">
-      <div class="agent-select-wrapper">
-        <select 
-          bind:value={selectedAgentId} 
-          class="agent-select"
-          onfocus={() => isSelectFocused = true}
-          onblur={() => isSelectFocused = false}
-        >
-          {#each agentList as agent}
-            <option value={agent.id}>{agent.label}</option>
-          {/each}
-        </select>
-      </div>
+      <select
+        bind:value={selectedAgentId}
+        class="agent-select"
+        onfocus={() => isSelectFocused = true}
+        onblur={() => isSelectFocused = false}
+      >
+        {#each agentList as agent}
+          <option value={agent.id}>{agent.label}</option>
+        {/each}
+      </select>
 
       <div class="bar-divider"></div>
 
@@ -360,12 +375,12 @@
         oninput={handleInput}
         onkeydown={handleKeydown}
         onpaste={handlePaste}
-        placeholder="Ask AI anything... (Type @ to attach files)"
+        placeholder="Ask AI... (@ to attach)"
         rows={1}
         class="bar-textarea"
       ></textarea>
 
-      <button class="send-btn" onclick={handleSend} disabled={!input.trim()} title="Send prompt to AI">
+      <button class="send-btn" onclick={handleSend} disabled={!input.trim()} title="Send">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="22" y1="2" x2="11" y2="13"/>
           <polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -373,62 +388,75 @@
       </button>
     </div>
   </div>
+
+  {#if showMentionDropdown && filteredFiles.length > 0}
+    <div class="mention-dropdown">
+      {#each filteredFiles as file, index}
+        <button
+          class="mention-item"
+          class:active={index === selectedMentionIndex}
+          onclick={() => insertMention(file.path)}
+        >
+          <span class="mention-name">{file.name}</span>
+          <span class="mention-path">{file.path}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
-  .ai-floating-bar-wrapper {
-    position: relative;
+  .ai-floating-bar-outer {
+    position: fixed;
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 100%;
-    pointer-events: auto;
+    width: auto;
+    z-index: 1000;
+    cursor: default;
   }
 
   .ai-floating-bar {
     display: flex;
     flex-direction: column;
-    background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
-    border-radius: 20px;
-    padding: 4px 10px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-    z-index: 1000;
-    max-width: 480px;
-    width: 90%;
-    opacity: 0.15;
-    transform: translateY(0);
-    transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s ease;
+    border-radius: 10px;
+    padding: 3px 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    min-width: 320px;
+    max-width: 500px;
+    width: 90vw;
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+    cursor: grab;
+    user-select: none;
   }
-
+  .ai-floating-bar:active {
+    cursor: grabbing;
+  }
   .ai-floating-bar:hover,
-  .ai-floating-bar:focus-within,
   .ai-floating-bar.active-focus {
-    opacity: 1;
-    transform: translateY(-2px);
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
     border-color: var(--accent-blue);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
   }
 
   .attached-files-container {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    padding: 4px 6px 8px 6px;
+    gap: 4px;
+    padding: 3px 4px 6px 4px;
     border-bottom: 1px solid var(--border-subtle);
-    margin-bottom: 4px;
+    margin-bottom: 2px;
   }
 
   .file-tag {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     background: var(--bg-hover);
     border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    padding: 2px 8px;
+    border-radius: 6px;
+    padding: 1px 6px;
     font-size: var(--fs-10);
     color: var(--text-primary);
   }
@@ -449,7 +477,6 @@
     padding: 0;
     line-height: 1;
   }
-
   .remove-tag:hover {
     color: var(--accent-red);
   }
@@ -457,50 +484,28 @@
   .floating-bar-content {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
 
   .bar-divider {
     width: 1px;
-    height: 18px;
+    height: 16px;
     background: var(--border-primary);
-  }
-
-  .action-btn {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 6px;
-    border-radius: 50%;
-    transition: all 0.15s ease;
-  }
-
-  .action-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-hover);
-  }
-
-  .agent-select-wrapper {
-    display: flex;
-    align-items: center;
+    flex-shrink: 0;
   }
 
   .agent-select {
     background: transparent;
     color: var(--text-secondary);
     border: none;
-    font-size: var(--fs-11);
+    font-size: var(--fs-10);
     font-weight: 500;
     outline: none;
     cursor: pointer;
-    max-width: 120px;
-    padding: 2px 4px;
+    max-width: 90px;
+    padding: 2px 2px;
+    flex-shrink: 0;
   }
-
   .agent-select option {
     background: var(--bg-secondary);
     color: var(--text-primary);
@@ -515,10 +520,10 @@
     resize: none;
     font-size: var(--font-size);
     line-height: 1.4;
-    padding: 6px 4px;
+    padding: 5px 2px;
     font-family: inherit;
+    min-width: 0;
   }
-
   .bar-textarea::placeholder {
     color: var(--text-muted);
   }
@@ -527,9 +532,9 @@
     background: var(--accent-blue);
     color: var(--bg-primary);
     border: none;
-    border-radius: 50%;
-    width: 28px;
-    height: 28px;
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -537,142 +542,122 @@
     transition: all 0.12s ease;
     flex-shrink: 0;
   }
-
   .send-btn:disabled {
     background: var(--bg-hover);
     color: var(--text-muted);
     cursor: not-allowed;
-    opacity: 0.6;
+    opacity: 0.5;
   }
-
   .send-btn:hover:not(:disabled) {
-    transform: scale(1.05);
-    filter: brightness(1.1);
+    filter: brightness(1.15);
   }
 
   .mention-dropdown {
     position: absolute;
-    bottom: calc(100% + 8px);
-    background: color-mix(in srgb, var(--bg-secondary) 95%, transparent);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    bottom: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
     border: 1px solid var(--border-primary);
-    border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-    max-height: 200px;
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    max-height: 180px;
     overflow-y: auto;
-    width: 100%;
-    max-width: 480px;
+    width: 90%;
+    max-width: 460px;
     z-index: 1001;
     display: flex;
     flex-direction: column;
-    padding: 4px;
+    padding: 3px;
   }
 
   .mention-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
+    gap: 6px;
+    padding: 5px 8px;
     background: transparent;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     color: var(--text-primary);
     text-align: left;
     cursor: pointer;
-    transition: background 0.12s ease;
-    font-size: var(--fs-11);
+    transition: background 0.1s ease;
+    font-size: var(--fs-10);
   }
-
   .mention-item:hover, .mention-item.active {
     background: var(--bg-hover);
   }
 
-  .mention-icon {
-    font-size: var(--fs-12);
-  }
-
   .mention-name {
     font-weight: 500;
+    flex-shrink: 0;
   }
-
   .mention-path {
     font-size: var(--fs-9);
     color: var(--text-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    flex: 1;
-    margin-left: 8px;
   }
 
-  .ai-floating-bar-wrapper.is-dragging .ai-floating-bar {
-    opacity: 1;
-    transform: translateY(-2px) scale(1.02);
+  .ai-floating-bar-outer.is-dragging .ai-floating-bar {
+    transform: scale(1.02);
     border-color: var(--accent-blue);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   }
 
   .drag-overlay {
     position: absolute;
-    inset: -6px;
-    background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
+    inset: -4px;
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
     border: 2px dashed var(--accent-blue);
-    border-radius: 24px;
+    border-radius: 12px;
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1010;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    animation: fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: fadeInScale 0.15s ease;
     pointer-events: none;
   }
 
   .drag-overlay-content {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     color: var(--accent-blue);
     font-size: var(--fs-11);
     font-weight: 600;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
-
   .drag-icon {
-    animation: bounceUpDown 1s infinite alternate ease-in-out;
+    animation: bounceUpDown 0.8s infinite alternate ease-in-out;
   }
 
   @keyframes fadeInScale {
     from { opacity: 0; transform: scale(0.96); }
     to { opacity: 1; transform: scale(1); }
   }
-
   @keyframes bounceUpDown {
-    from { transform: translateY(-3px); }
-    to { transform: translateY(3px); }
+    from { transform: translateY(-2px); }
+    to { transform: translateY(2px); }
   }
 
   .pc-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    margin: 0 2px 4px;
-    background: color-mix(in srgb, var(--accent-blue) 10%, var(--bg-primary));
+    gap: 6px;
+    padding: 4px 10px;
+    margin: 0 0 4px;
+    background: color-mix(in srgb, var(--accent-blue) 8%, var(--bg-primary));
     border: 1px solid var(--accent-blue);
-    border-radius: 10px;
+    border-radius: 6px;
     cursor: pointer;
     user-select: none;
-    transition: all 0.15s ease;
-    animation: slideDown 0.15s ease;
+    transition: background 0.15s ease;
+    animation: slideDown 0.12s ease;
   }
   .pc-bar:hover {
-    background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-primary));
-  }
-  .pc-icon {
-    color: var(--accent-blue);
-    flex-shrink: 0;
+    background: color-mix(in srgb, var(--accent-blue) 15%, var(--bg-primary));
   }
   .pc-text {
     font-size: var(--fs-11);
@@ -682,28 +667,29 @@
   .pc-hint {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     margin-left: auto;
-    font-size: 9px;
+    font-size: var(--fs-9);
     color: var(--text-muted);
   }
   .pc-key {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 16px;
-    height: 14px;
-    padding: 0 3px;
+    min-width: 14px;
+    height: 13px;
+    padding: 0 2px;
     background: var(--bg-surface);
     border: 1px solid var(--border-primary);
-    border-radius: 3px;
+    border-radius: 2px;
     font-size: 8px;
     font-weight: 600;
     color: var(--text-secondary);
     line-height: 1;
   }
+
   @keyframes slideDown {
-    from { opacity: 0; transform: translateY(-6px); }
+    from { opacity: 0; transform: translateY(-4px); }
     to { opacity: 1; transform: translateY(0); }
   }
 </style>

@@ -53,7 +53,7 @@
   $effect(() => {
     if (!listenMode) return;
 
-    listen<string>("ai:route_progress", (e) => {
+    const progressPromise = listen<string>("ai:route_progress", (e) => {
       const msg = e.payload;
 
       // DAG start
@@ -103,24 +103,30 @@
         }
         return;
       }
-    }).then(fn => { unlistenProgress = fn; });
+    });
+    progressPromise.then(fn => { unlistenProgress = fn; });
 
-    listen<any>("ai:done", () => {
+    const donePromise = listen<any>("ai:done", () => {
       internalNodes = internalNodes.map(n => ({ ...n, status: "completed" as const }));
       isRunning = false;
     });
 
-    listen<any>("ai:error", () => {
+    const errorPromise = listen<any>("ai:error", () => {
       internalNodes = internalNodes.map(n =>
         n.status === "active" ? { ...n, status: "error" as const } : n
       );
       isRunning = false;
     });
 
-    return () => { unlistenProgress?.(); };
+    return () => {
+      if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; }
+      else progressPromise.then(fn => fn());
+      donePromise.then(fn => fn());
+      errorPromise.then(fn => fn());
+    };
   });
 
-  onDestroy(() => { unlistenProgress?.(); });
+  onDestroy(() => { if (unlistenProgress) { unlistenProgress(); unlistenProgress = null; } });
 
   // ─── Node styling ────────────────────────────────────────────────────
   function nodeClass(status: NodeStatus): string {

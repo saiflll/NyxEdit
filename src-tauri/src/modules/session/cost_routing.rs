@@ -148,8 +148,8 @@ impl CostRouter {
 
     /// Get cost summary for the frontend
     pub fn get_cost_summary(&self) -> serde_json::Value {
-        let budget = self.budget.lock().unwrap();
         let costs = self.session_costs.lock().unwrap();
+        let budget = self.budget.lock().unwrap();
         serde_json::json!({
             "budget": {
                 "max_per_session": budget.max_per_session,

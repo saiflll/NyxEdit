@@ -208,7 +208,8 @@ pub fn db_disconnect(
     connection_id: String,
 ) -> Result<(), String> {
     let mut connections = state.connections.lock().unwrap();
-    connections.remove(&connection_id);
+    let _entry = connections.remove(&connection_id);
+    drop(connections);
     Ok(())
 }
 

@@ -143,7 +143,8 @@ pub fn ssh_disconnect(
     session_id: String,
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().unwrap();
-    sessions.remove(&session_id);
+    let _session = sessions.remove(&session_id);
+    drop(sessions);
     Ok(())
 }
 

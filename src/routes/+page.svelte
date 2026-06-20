@@ -526,29 +526,23 @@
     } as any;
   }
 
-  $effect(() => {
-    let unlistenStart: any = null;
-    let unlistenProgress: any = null;
-    let unlistenEnd: any = null;
-    let unlistenStatus: any = null;
-    let unlistenBudget: any = null;
-    let unlistenSwarm: any = null;
-
+  onMount(() => {
     const throttledProgress = throttle((data: any) => {
       indexProgress = data.progress;
       indexCurrentFile = data.current_file;
       indexTotalFiles = data.total_files;
       indexCurrentIndex = data.current_index;
       
-      // Log progress periodically to avoid UI render lag and log spam
       if (data.current_index === 1 || data.current_index === data.total_files || Math.round(data.progress) % 20 === 0) {
         const fn = data.current_file.split(/[/\\]/).pop() || data.current_file;
         addLog(`[Graph Sync] Indexing progress: ${Math.round(data.progress)}% [${fn}] (${data.current_index}/${data.total_files})`, "info");
       }
     }, 200);
 
-    async function setupListeners() {
-      unlistenStart = await listen<number>("graph:index_start", (event) => {
+    const cleanups: (() => void)[] = [];
+
+    Promise.all([
+      listen<number>("graph:index_start", (event) => {
         isIndexingGraph = true;
         indexTotalFiles = event.payload;
         indexProgress = 0;
@@ -556,47 +550,37 @@
         indexCurrentFile = "Analyzing files...";
         graphStatus.set("Syncing");
         addLog(`Started indexing workspace: ${event.payload} files found.`, "info");
-      });
-
-      unlistenProgress = await listen<any>("graph:index_progress", (event) => {
+      }),
+      listen<any>("graph:index_progress", (event) => {
         isIndexingGraph = true;
         throttledProgress(event.payload);
-      });
-
-      unlistenEnd = await listen<number>("graph:index_end", (event) => {
+      }),
+      listen<number>("graph:index_end", (event) => {
         isIndexingGraph = false;
         indexProgress = 100;
         graphStatus.set("Synced");
         addLog(`Workspace indexing finished. Indexed ${event.payload} symbols.`, "success");
         addToast(`Workspace indexed: ${event.payload} symbols found`, "success");
-      });
-
-      unlistenStatus = await listen<string>("graph:status", (event) => {
+      }),
+      listen<string>("graph:status", (event) => {
         graphStatus.set(event.payload);
         addLog(`[Graph Sync] Knowledge graph status: ${event.payload}`, "info");
-      });
-
-      unlistenBudget = await listen<any>("ai:budget_warning", (event) => {
+      }),
+      listen<any>("ai:budget_warning", (event) => {
         addToast(event.payload.message, "warning");
         costSummary.set(event.payload.cost || { total_cost: 0.0, limit: 0.0 });
         addLog(`[Budget Warning] ${event.payload.message}`, "warning");
-      });
-
-      unlistenSwarm = await listen<any>("ai:agent_swarm_status", (event) => {
+      }),
+      listen<any>("ai:agent_swarm_status", (event) => {
         agentSwarmStatus = event.payload.status || "Idle";
         addLog(`[Agent Swarm] ${event.payload.status}: ${event.payload.detail || ""}`, "info");
-      });
-    }
-
-    setupListeners();
+      }),
+    ]).then((fns) => {
+      cleanups.push(...fns);
+    });
 
     return () => {
-      if (unlistenStart) unlistenStart();
-      if (unlistenProgress) unlistenProgress();
-      if (unlistenEnd) unlistenEnd();
-      if (unlistenStatus) unlistenStatus();
-      if (unlistenBudget) unlistenBudget();
-      if (unlistenSwarm) unlistenSwarm();
+      for (const fn of cleanups) fn();
     };
   });
 
@@ -628,16 +612,14 @@
 
   import { ensureNyxDir } from "$lib/nyxConfig";
   $effect(() => {
-    const unsub = currentDir.subscribe(async (val) => {
+    const unsub = currentDir.subscribe((val) => {
       if (val) {
-        await ensureNyxDir();
-        // 1. Notify AI backend of workspace root for agent logs
+        ensureNyxDir().catch(() => {});
+
         invoke("ai_set_workspace", { root: val }).catch(() => {});
 
-        // 2. Proactively detect project framework
         addLog(`Detecting framework for: ${val}...`, "info");
-        try {
-          const detected = await invoke<any>("project_detect", { root: val });
+        invoke<any>("project_detect", { root: val }).then((detected) => {
           if (detected && detected.framework) {
             let label = detected.framework;
             if (detected.framework === "RustCargo") label = "Rust/Cargo";
@@ -655,16 +637,14 @@
             activeFramework = "Unknown";
             addLog("No specific project framework detected.", "info");
           }
-        } catch (e) {
+        }).catch((e) => {
           err("Framework detection failed:", e);
           activeFramework = "Unknown";
-        }
+        });
 
-        // 3. Auto-load or Auto-index the symbol graph
         addLog("Loading workspace symbol graph...", "info");
         graphStatus.set("Syncing");
-        try {
-          const exists = await invoke<boolean>("graph_load_workspace", { root: val });
+        invoke<boolean>("graph_load_workspace", { root: val }).then((exists) => {
           if (exists) {
             graphStatus.set("Synced");
             addLog("Loaded existing symbol graph successfully.", "success");
@@ -677,29 +657,25 @@
               graphStatus.set("Error");
             });
           }
-        } catch (e) {
+        }).catch((e) => {
           err("Workspace load/indexing check failed:", e);
           graphStatus.set("Error");
-        }
+        });
 
-        // 4. Start file watcher automatically for incremental live updates
-        try {
-          await invoke("graph_watch", { root: val });
+        invoke("graph_watch", { root: val }).then(() => {
           addLog("File watcher started. Symbols will sync live on file edits.", "info");
-        } catch (e) {
+        }).catch((e) => {
           err("Failed to start file watcher:", e);
-        }
+        });
 
-        // 5. Trigger an initial background code review for the workspace
         addLog("Running initial static code review...", "info");
-        try {
-          const res = await invoke<any>("review_text", { text: "" });
+        invoke<any>("review_text", { text: "" }).then((res) => {
           if (res && res.findings) {
             reviewFindings.set(res.findings);
           }
-        } catch (e) {
+        }).catch((e) => {
           err("Initial review check failed:", e);
-        }
+        });
       }
     });
     return unsub;
@@ -1374,9 +1350,9 @@
     <!-- Workspace -->
     <main class="workspace-area">
       {#each tabs as tab (tab.id)}
-        <div class="tab-panel" class:hidden={activeTabId !== tab.id}>
+        <div class="tab-panel" class:hidden={activeTabId !== tab.id} class:terminal-tab={tab.type === 'terminal' || tab.type === 'private'}>
           {#if tab.type === "terminal"}
-            <SplitTerminal active={activeTabId === tab.id} cwd={primaryCwd} onCwdChange={onTerminalCwdChange} initialCommand={tab.initialCommand} />
+            <SplitTerminal cwd={primaryCwd} onCwdChange={onTerminalCwdChange} initialCommand={tab.initialCommand} />
           {:else if tab.type === "file"}
             {#if tab.filePath && tab.fileContent !== undefined}
               <ViewerRouter
@@ -1425,7 +1401,6 @@
                 AI Restricted — AI cannot access this terminal
               </div>
               <SplitTerminal
-                active={activeTabId === tab.id}
                 cwd={primaryCwd}
                 onCwdChange={onTerminalCwdChange}
                 onSessionCreated={(sid: string) => markSessionPrivate(sid)}
@@ -1615,8 +1590,8 @@
     </div>
   {/if}
 
-  <!-- Photoshop-style Floating AI Input Bar -->
-  <div class="photoshop-ai-bar-container">
+  <!-- Floating AI Input Bar -->
+  <div class="ai-floating-bar-container">
     <AIFloatingBar />
   </div>
 
@@ -1628,18 +1603,11 @@
 </div>
 
 <style>
-  .photoshop-ai-bar-container {
-    position: fixed;
-    bottom: 50px;
-    left: 50%;
-    transform: translateX(-50%);
+  .ai-floating-bar-container {
     z-index: 1000;
-    display: flex;
-    justify-content: center;
-    width: 100%;
     pointer-events: none;
   }
-  .photoshop-ai-bar-container :global(> *) {
+  .ai-floating-bar-container :global(> *) {
     pointer-events: auto;
   }
 
@@ -1871,6 +1839,7 @@
   .workspace-area { flex:1; display:flex; flex-direction:column; overflow:hidden; min-width:200px; }
   .tab-panel { display: flex; flex-direction: column; width: 100%; height: 100%; }
   .tab-panel.hidden { display: none !important; }
+  .tab-panel.hidden.terminal-tab { display: flex !important; position: absolute; left: -9999px; top: -9999px; visibility: hidden; pointer-events: none; }
   .placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; height:100%; color:var(--text-muted); font-size:var(--fs-13); }
   .placeholder strong { color:var(--accent-blue); }
 

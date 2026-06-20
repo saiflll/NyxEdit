@@ -8,7 +8,6 @@
   } from "../stores.svelte";
 
   let {
-    active = false,
     sessionId = $bindable(),
     rows = 24,
     cols = 80,
@@ -29,9 +28,6 @@
   let passwordSent = $state(false);
   const bufferedOutput = new Map<string, string>();
 
-  let destroyed = $state(false);
-  let listenPromise: Promise<UnlistenFn> | null = null;
-
   let pendingPaste = $state<string | null>(null);
   let pasteConfirmVisible = $state(false);
   let contextMenu = $state<{ x: number; y: number } | null>(null);
@@ -40,22 +36,6 @@
     if (sessionId) {
       activeSessionId = sessionId;
       activeTerminalSessionId.set(sessionId);
-    }
-  });
-
-  $effect(() => {
-    if (active && terminal) {
-      console.log("[Terminal debug] Tab activated. Refitting and focusing terminal...");
-      setTimeout(() => {
-        try {
-          if (fitAddon && terminalEl && terminalEl.clientWidth > 0 && terminalEl.clientHeight > 0) {
-            fitAddon.fit();
-          }
-          terminal.focus();
-        } catch (e) {
-          console.warn("[Terminal] Refit/focus on activation failed:", e);
-        }
-      }, 50);
     }
   });
 
@@ -165,7 +145,7 @@
       animationFrameId = null;
     }
 
-    listenPromise = listen<PtyOutputEvent>("pty-output", (event) => {
+    unlisten = await listen<PtyOutputEvent>("pty-output", (event) => {
       const { session_id, data } = event.payload;
       if (session_id === activeSessionId) {
         if (password && !passwordSent && /password:/i.test(data)) {
@@ -180,12 +160,9 @@
         bufferedOutput.set(session_id, (bufferedOutput.get(session_id) || "") + data);
       }
     });
-    unlisten = await listenPromise;
-    if (destroyed) { unlisten(); unlisten = null; return; }
 
     if (!sessionId) {
       await openTerminal();
-      if (destroyed) return;
     } else {
       activeSessionId = sessionId;
       if (bufferedOutput.has(sessionId)) {
@@ -273,7 +250,6 @@
 
     let currentLine = "";
     terminal.onData((data: string) => {
-      console.log("[Terminal debug] onData received data:", JSON.stringify(data), "activeSessionId:", activeSessionId);
       if (pasteConfirmVisible) {
         if (data === "\r" || data === "\n") {
           confirmPaste();
@@ -284,11 +260,7 @@
       }
 
       if (activeSessionId) {
-        invoke("pty_write", { sessionId: activeSessionId, data }).catch((err) => {
-          console.error("[Terminal] pty_write failed for session:", activeSessionId, err);
-        });
-      } else {
-        console.warn("[Terminal] pty_write skipped: activeSessionId is empty");
+        invoke("pty_write", { sessionId: activeSessionId, data });
       }
 
       for (let i = 0; i < data.length; i++) {
@@ -343,37 +315,24 @@
   });
 
   onDestroy(() => {
-    destroyed = true;
-    if (unlisten) { unlisten(); unlisten = null; }
-    else if (listenPromise) {
-      listenPromise.then(fn => { if (destroyed) fn(); });
-    }
-    if (terminal) { terminal.dispose(); terminal = null; }
-    if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
-    if (themeObserver) { themeObserver.disconnect(); themeObserver = null; }
-    const sid = activeSessionId;
-    activeSessionId = null;
-    if (sid) {
-      invoke("pty_close", { sessionId: sid }).catch((e) => {
+    if (unlisten) unlisten();
+    if (terminal) terminal.dispose();
+    if (resizeObserver) resizeObserver.disconnect();
+    if (themeObserver) themeObserver.disconnect();
+    if (activeSessionId) {
+      invoke("pty_close", { sessionId: activeSessionId }).catch((e) => {
         console.error("Failed to close PTY session on destroy:", e);
       });
     }
   });
 
   async function openTerminal() {
-    console.log("[Terminal debug] Spawning new PTY session...");
     const id = await invoke<string>("pty_open", {
       shell: shell ?? null,
       rows: terminal.rows,
       cols: terminal.cols,
       label: label || null,
     });
-    if (destroyed) {
-      console.log("[Terminal debug] Component destroyed during spawn, closing leaked session:", id);
-      invoke("pty_close", { sessionId: id }).catch(() => {});
-      return;
-    }
-    console.log("[Terminal debug] PTY session spawned successfully with ID:", id);
     sessionId = id;
     activeSessionId = id;
     activeTerminalSessionId.set(id);
@@ -415,11 +374,9 @@
   role="presentation"
   onclick={() => {
     if (activeSessionId) activeTerminalSessionId.set(activeSessionId);
-    if (terminal) terminal.focus();
   }}
   onfocusin={() => {
     if (activeSessionId) activeTerminalSessionId.set(activeSessionId);
-    if (terminal) terminal.focus();
   }}
 >
   <div bind:this={terminalEl} class="term-instance"></div>
