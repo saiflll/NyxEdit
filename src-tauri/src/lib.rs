@@ -36,6 +36,7 @@ pub fn run() {
             ai::ai_set_workspace,
             ai::ai_get_agent_logs,
             ai::ai_list_personas,
+            ai::save_personas,
             ai::ai_compute_diff,
             secrets::secrets_get,
             secrets::secrets_set,
