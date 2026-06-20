@@ -1192,9 +1192,18 @@
             <!-- Workspace / Git / SSH Toggle Footer with Action Buttons -->
             <div class="sidebar-toggle-footer">
               <div class="toggle-switch">
-                <button class:active={workspaceMode === "explorer"} onclick={() => workspaceMode = "explorer"}>Workspace</button>
-                <button class:active={workspaceMode === "git"} onclick={() => workspaceMode = "git"}>Git Track</button>
-                <button class:active={workspaceMode === "ssh_explorer"} onclick={() => workspaceMode = "ssh_explorer"}>SSH Explorer</button>
+                <button class:active={workspaceMode === "explorer"} onclick={() => workspaceMode = "explorer"}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  <span>Workspace</span>
+                </button>
+                <button class:active={workspaceMode === "git"} onclick={() => workspaceMode = "git"}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+                  <span>Git</span>
+                </button>
+                <button class:active={workspaceMode === "ssh_explorer"} onclick={() => workspaceMode = "ssh_explorer"}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+                  <span>SSH</span>
+                </button>
               </div>
             </div>
           {:else if sidebarView === "search"}
@@ -1724,36 +1733,54 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 6px 8px;
+    padding: 5px 6px;
     background: var(--bg-surface);
     border-top: 1px solid var(--border-subtle);
-    gap: 6px;
+    gap: 4px;
     flex-shrink: 0;
   }
   .toggle-switch {
     display: flex;
     background: var(--bg-primary);
     border: 1px solid var(--border-subtle);
-    border-radius: 6px;
+    border-radius: 5px;
     padding: 2px;
     flex: 1;
+    gap: 1px;
   }
   .toggle-switch button {
     flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
     background: transparent;
     border: none;
     color: var(--text-muted);
     font-size: var(--fs-9-5);
-    padding: 2px 4px;
+    padding: 3px 4px;
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: 3px;
     font-weight: 500;
-    transition: all 0.1s ease;
+    transition: all 0.12s ease;
+    white-space: nowrap;
+  }
+  .toggle-switch button:hover:not(.active) {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
   }
   .toggle-switch button.active {
-    background: var(--accent-blue);
-    color: var(--bg-primary);
+    background: linear-gradient(135deg, var(--accent-blue), color-mix(in srgb, var(--accent-blue) 70%, var(--accent-purple)));
+    color: #fff;
     font-weight: 600;
+    box-shadow: 0 1px 4px color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  }
+  .toggle-switch button svg {
+    flex-shrink: 0;
+    opacity: 0.7;
+  }
+  .toggle-switch button.active svg {
+    opacity: 1;
   }
   .git-footer-actions {
     display: flex;
