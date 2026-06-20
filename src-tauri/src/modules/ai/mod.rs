@@ -579,63 +579,64 @@ pub async fn stream_openai(
     });
     body["stream_options"] = serde_json::json!({"include_usage": true});
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req_builder = client
-        .post(format!("{}/chat/completions", base_url))
-        .json(&body);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut req_builder = client
+            .post(format!("{}/chat/completions", base_url))
+            .json(&body);
 
-    if let Some(key) = &agent.api_key {
-        req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
-    }
+        if let Some(key) = &agent.api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {}", key));
+        }
 
-    let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
+        let response = req_builder.send().await.map_err(|e| format!("Request failed: {}", e))?;
 
-    let status = response.status();
+        let status = response.status();
 
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("AI request failed ({}): {}", status, text));
-    }
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("AI request failed ({}): {}", status, text));
+        }
 
-    let mut buffer = String::new();
-    let mut full_content = String::new();
-    let mut input_tokens = 0u64;
-    let mut output_tokens = 0u64;
+        let mut buffer = String::new();
+        let mut full_content = String::new();
+        let mut input_tokens = 0u64;
+        let mut output_tokens = 0u64;
 
-    let mut stream = response.bytes_stream();
-    while let Some(chunk_result) = stream.next().await {
-        let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        let mut stream = response.bytes_stream();
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(|e| format!("Stream error: {}", e))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].trim().to_string();
-            buffer = buffer[pos + 1..].to_string();
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer = buffer[pos + 1..].to_string();
 
-            if line.is_empty() { continue; }
-            if !line.starts_with("data: ") { continue; }
+                if line.is_empty() { continue; }
+                if !line.starts_with("data: ") { continue; }
 
-            let data = line[6..].trim().to_string();
-            if data == "[DONE]" { continue; }
+                let data = line[6..].trim().to_string();
+                if data == "[DONE]" { continue; }
 
-            if let Ok(json) = serde_json::from_str::<Value>(&data) {
-                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                    if !delta.is_empty() {
-                        full_content.push_str(delta);
-                        let _ = app.emit("ai:chunk", AiStreamChunk { delta: delta.to_string() });
+                if let Ok(json) = serde_json::from_str::<Value>(&data) {
+                    if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+                        if !delta.is_empty() {
+                            full_content.push_str(delta);
+                            let _ = app.emit("ai:chunk", AiStreamChunk { delta: delta.to_string() });
+                        }
                     }
-                }
-                if let Some(usage) = json["usage"].as_object() {
-                    if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) { input_tokens = v; }
-                    if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) { output_tokens = v; }
+                    if let Some(usage) = json["usage"].as_object() {
+                        if let Some(v) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) { input_tokens = v; }
+                        if let Some(v) = usage.get("completion_tokens").and_then(|v| v.as_u64()) { output_tokens = v; }
+                    }
                 }
             }
         }
-    }
 
-    Ok((full_content, input_tokens, output_tokens))
+        Ok((full_content, input_tokens, output_tokens))
 }
 
 // â”€â”€ Tool types for ReAct loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1558,6 +1559,7 @@ async fn run_react_loop(
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
+            .connect_timeout(std::time::Duration::from_secs(5))
             .build()
             .map_err(|e| e.to_string())?;
         let mut req_builder = client
@@ -1697,12 +1699,16 @@ pub fn resolve_routed_agent(
         }
         agent.model = model_id.clone();
     } else {
-        // No model routed â€” try to use any configured gemini agent, then any agent
-        if let Some(provider_agent) = state.get_agent_for_provider("gemini") {
+        // No model routed — try to use any configured agent, preferring local (ollama) first
+        let all_agents = state.list_agents();
+        let fallback_agent = all_agents.iter()
+            .find(|a| a.provider == "ollama")
+            .or_else(|| all_agents.first());
+        if let Some(provider_agent) = fallback_agent {
             agent.id = provider_agent.id.clone();
             agent.provider = provider_agent.provider.clone();
             agent.base_url = provider_agent.base_url.clone().or_else(|| {
-                let u = default_base_url("gemini");
+                let u = default_base_url(&provider_agent.provider);
                 if u.is_empty() { None } else { Some(u.to_string()) }
             });
             agent.api_key = provider_agent.api_key.clone();
@@ -2137,11 +2143,18 @@ pub async fn ai_chat_stream(
                 .or_else(|| a.api_key.clone());
             key.map(|k| !k.is_empty() && k != "********").unwrap_or(false)
         });
-        // Put the initially-selected agent's provider last so we try different providers first
+        // Sort: current provider last, ollama/local first among remaining
         all.sort_by(|a, b| {
             let a_same = a.provider == agent.provider;
             let b_same = b.provider == agent.provider;
-            a_same.cmp(&b_same)
+            let same_cmp = a_same.cmp(&b_same);
+            if same_cmp != std::cmp::Ordering::Equal {
+                return same_cmp;
+            }
+            // Local/offline models (ollama) should be tried before cloud providers
+            let a_local = a.provider == "ollama";
+            let b_local = b.provider == "ollama";
+            b_local.cmp(&a_local)
         });
         all.into_iter().filter(|a| a.id != agent.id).collect()
     };
@@ -2193,6 +2206,8 @@ pub async fn ai_chat_stream(
         // Log agent invocation
         state.write_agent_log(&agent.id, &agent.name,
             &format!("INVOKED model={}/{} messages={}", agent.provider, agent.model, msgs_to_send.len()));
+        let _ = app.emit("ai:route_progress",
+            format!("Calling {}/{}...", agent.provider, agent.model));
 
         // Use ReAct loop for persona agents, simple streaming for others
         let result = if agent.persona_id.is_some() {
@@ -2269,8 +2284,15 @@ pub async fn ai_chat_stream(
                     || e.contains("quota") || e.contains("rate_limit") || e.contains("rate limit");
 
                 let is_quota_exhausted = e.contains("quota") || e.contains("RESOURCE_EXHAUSTED") || e.contains("billing") || e.contains("Quota exceeded") || e.contains("exceeded your current quota");
-                if is_quota_exhausted {
-                    // Quota exhausted means trying other models on the same provider will also fail.
+
+                // Connection error (service down, not running etc) — skip all models on this provider
+                let is_connection_error = e.contains("error sending request for url")
+                    || e.contains("Connection refused")
+                    || e.contains("dns error")
+                    || e.contains("resolve")
+                    || e.contains("timed out");
+                if is_quota_exhausted || is_connection_error {
+                    // Quota/connection error means trying other models on the same provider will also fail.
                     // Clear intra_model_fallback so we immediately escalate to other providers.
                     intra_model_fallback.clear();
                 }
@@ -2278,7 +2300,9 @@ pub async fn ai_chat_stream(
                 let fail_label = if is_rate_limit {
                     format!("Rate limit/quota on {}/{}{}",
                         agent.provider, agent.model,
-                        retry_delay.map(|d| format!(" â€” retry in {}s", d)).unwrap_or_default())
+                        retry_delay.map(|d| format!(" — retry in {}s", d)).unwrap_or_default())
+                } else if is_connection_error {
+                    format!("Service down for {} — switching provider", agent.provider)
                 } else {
                     format!("{}/{} failed", agent.provider, agent.model)
                 };

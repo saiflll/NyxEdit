@@ -1,5 +1,4 @@
 # AGENTS.md — contlib (NyxEdit)
-> **Pindah ke `docs/architecture/cmmo.md`** — dokumentasi ini adalah salinan untuk kompatibilitas.
 
 ## Stack
 - **Frontend**: SvelteKit 5 + TypeScript + Vite 6, static adapter (SPA mode, fallback `index.html`)
@@ -57,9 +56,6 @@
 - **Low RAM Optimization**: Replaced default memory allocator with `mimalloc` to mitigate fragmentation. Implemented Lazy Loading for the Stage 5 symbol graph (`SymbolGraph`) which loads on demand only when queried, and added `graph_unload_workspace` to allow unloading the graph and freeing up memory on demand.
 - **Multi-Folder Workspace Support**: Implemented workspace folder stacking (multi-root project workspaces) in the Svelte file explorer tree, configuration saving/loading to `.workspace` files (including support for VS Code `.code-workspace` configuration JSON schemas), dynamic path separator resolution, and merging file entries for AI contextual mentions.
 - **CLI Agent Gateway**: Full integration of 6 external CLI agents (Claude, Gemini, OpenCode, Aider, Codex, Agy) into the ReAct loop as tools. CLI Discovery Engine auto-detects installed CLIs. External agents can be triggered via auto-routing (Intent::ExternalAgent) or directly called as tools (`claude_run`, `gemini_run`, etc.) from the ReAct loop.
-- **Health & Cost Dashboard**: Created `HealthPanel.svelte` (health ring, component status, heal history, auto-repair) and `CostPanel.svelte` (budget, analytics, routing config form, spending breakdown) in Settings. Registered 8 new Tauri commands for health/cost backend.
-- **Model Registry Expansion**: Expanded `models.toml` from 4 to ~100 models across 19 providers. External config auto-created at `%APPDATA%/contlib/models.toml` on first run.
-- **Fallback & Timeout Fixes**: Added `connect_timeout(5s)` to stop dead services fast. Connection errors (refused/DNS/timeout) skip all same-provider models immediately. Ollama/local models preferred in fallback sort.
 
 ## API Test Results
 | Provider | API Key | Model | Status |
@@ -71,7 +67,7 @@
 
 ## Testing
 - `cargo test` — runs 14 unit tests (no API keys needed, ~9s)
-  - 14 unit tests (executor, CLI adapters, router, provider, routing engine)
+  - 36 unit tests (tool execution, model routing/fallback, model price, system prompt resolution — plus DAG, context, cost routing, CLI adapters, executor, router, provider, model registry)
 - `CEREBRAS_API_KEY=... cargo test -- --ignored` — API integration tests
 - React loop test (`test_react_loop_coder_read_file`) confirms tool-calling ReAct loop works end-to-end
 
@@ -99,12 +95,12 @@
 | **8** Multi-Model | ✅ `provider_stats.rs`, CircuitBreaker | ❌ 2 commands | ✅ Ya — circuit breaker aktif di fallback loop |
 | **9** Multi-Agent | ✅ `agent_orch.rs`, 3 sub-agents | ❌ 4 commands | ✅ Ya — otomatis mendelegasikan tugas kompleks (Refactor, Review, Arch) |
 | **10** DAG | ✅ `DagPlan`, `run_dag()` parallel tokio | ❌ | 🔶 Routing prioritaskan DAG untuk RefactorFull/CodeReview |
-| **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ✅ HealthPanel.svelte (health ring, history, auto-repair) | ✅ Ya — otomatis memulihkan komponen yang rusak saat startup ketika mendeteksi crash marker |
+| **11** Self-Healing | ✅ `self_heal.rs`, health tracking | ❌ 2 commands | ✅ Ya — otomatis memulihkan komponen yang rusak saat startup ketika mendeteksi crash marker |
 | **12** Performance & DX | ✅ Cache warming, crash marker, startup health check, mimalloc allocator | ❌ `heal_check_startup`, `heal_clear_crash_marker` | ✅ Cache warm di `ensure_loaded`, crash marker di startup, mimalloc global allocator |
 | **13** RAG Conversation Memory | ✅ `context.rs` — compression, cross-session retrieval | ❌ | ✅ Compression aktif di `ai_chat_stream` (OnceLock) |
-| **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ✅ CostPanel.svelte (budget, analytics, routing config form) | ✅ Ya — otomatis memilih model termurah dalam satu reasoning tier (budget constraint routing) |
+| **14** Smart Cost Routing | ✅ `cost_routing.rs` — cheapest model, budget limit | ❌ 3 commands | ✅ Ya — otomatis memilih model termurah dalam satu reasoning tier (budget constraint routing) |
 
-**Kesimpulan**: Backend 100% aktif, frontend ~50% terintegrasi. Yang benar-benar aktif end-to-end secara otomatis di alur utama (main flow): Stage 1, 2, 3, 4, 6, 7, 8, 9 (auto-delegate), 11, 12, 13, dan 14. Lazy loading symbol graph (Stage 5) dan mimalloc allocator menjaga penggunaan RAM NyxEdit tetap rendah. Health & Cost dashboard (Stage 11 & 14 frontend) baru ditambahkan di Settings.
+**Kesimpulan**: Backend 100% aktif, frontend masih ada beberapa kontrol manual yang belum di-Svelte-in. Yang benar-benar aktif end-to-end secara otomatis di alur utama (main flow): Stage 1, 2, 3, 4, 6, 7, 8, 9 (auto-delegate), 11, 12, 13, dan 14. Lazy loading symbol graph (Stage 5) dan mimalloc allocator menjaga penggunaan RAM NyxEdit tetap rendah.
 
 ### Rust files added (Stage 1–14)
 - `src-tauri/models.toml` — compiled-in + external model definitions (100 models, 15+ providers, auto-copied to `{APPDATA}/contlib/models.toml` on first run)
@@ -145,11 +141,9 @@
 - `src/lib/components/Terminal.svelte` — added paste confirmation with `[Paste ~N lines]` floating bar + `attachCustomKeyEventHandler` for Ctrl+V/Shift+Insert + right-click context menu (Copy/Paste/Select All)
 - `src/lib/components/AIFloatingBar.svelte` — added paste confirmation (Paste ~N lines bar, Enter confirm, Esc cancel) for text paste, image/file paste unchanged
 - `src/lib/components/AIChat.svelte` — replaced chain/DAG stepper with compact `ai-proc` grey shimmer line + single-line status summary, auto-clear on done
-- `src/lib/components/settings/HealthPanel.svelte` & `CostPanel.svelte` — new Health & Cost dashboard panels in Settings (2-column responsive grid, live polling, localStorage collapse state)
-- `src/lib/components/SystemHealthCostPanel.svelte` — removed (replaced by HealthPanel + CostPanel)
 
 ### Verification
 - `cargo check`: 0 errors
 - `cargo test`: 14/14 passed, 5 ignored (API tests need env vars)
 - `npm run check`: 0 errors (74 pre-existing warnings)
-- Total CMMO: Stage 1–14 100% backend, ~50% frontend integration
+- Total CMMO: Stage 1–14 100% backend, ~40% frontend integration
