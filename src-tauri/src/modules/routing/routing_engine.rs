@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use super::model_registry::{ModelRegistry, ReasoningTier, Spec};
-use super::tool_registry::{ToolId, ToolRegistry};
-use super::project_intel::ProjectContext;
+use crate::modules::routing::model_registry::{ModelRegistry, ReasoningTier, Spec};
+use crate::modules::execution::tool_registry::{ToolId, ToolRegistry};
+use crate::modules::project_intel::{ProjectContext, ProjectFramework};
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum ContextSize {
@@ -260,7 +260,7 @@ impl RoutingEngine {
 
         // Prefer code-specialized spec for known frameworks
         match ctx.framework {
-            super::project_intel::ProjectFramework::RustCargo => {
+            ProjectFramework::RustCargo => {
                 if decision.intent == Intent::CodeReview || decision.intent == Intent::DebugLogic {
                     if let Some(m) = self.model_registry.select_model(decision.reasoning_tier.clone(), Spec::Code, decision.token_count) {
                         decision.model_route = Some(m.id.clone());
@@ -268,7 +268,7 @@ impl RoutingEngine {
                     }
                 }
             }
-            super::project_intel::ProjectFramework::NodeNpm | super::project_intel::ProjectFramework::NodeYarn => {
+            ProjectFramework::NodeNpm | ProjectFramework::NodeYarn => {
                 if decision.intent == Intent::ExplainSimple {
                     if let Some(m) = self.model_registry.select_model(ReasoningTier::Low, Spec::Chat, decision.token_count) {
                         decision.model_route = Some(m.id.clone());
@@ -290,6 +290,10 @@ pub fn strip_injected_context(text: &str) -> String {
     // State-based skipping of blocks at the start
     while i < lines.len() {
         let line = lines[i].trim();
+        if line.is_empty() {
+            i += 1;
+            continue;
+        }
         if line.starts_with("[Global Custom Instructions]") {
             i += 1;
             while i < lines.len() {
@@ -358,7 +362,7 @@ mod tests {
 
     #[test]
     fn test_strip_injected_context() {
-        let input = "[Global Custom Instructions]\nAlways answer in Indonesian\n\n[Agent Skills Toggles]\n- Reading Files: ENABLED\n- Writing/Editing Files: DISABLED (Do not use write_file, edit. Inform user if requested)\n- Terminal Command Execution: DISABLED (Do not use bash_run. Inform user if requested)\n\n[Active Editor Context - File: c:\\foo.js]\n```\nconst x = 1;\n```\n\nhayy\n\n---\n[Attached File: bar.js]\nconsole.log(1);\n---";
+        let input = "[Global Custom Instructions]\nAlways answer in Indonesian\n\n[Agent Skills Toggles]\n- Reading Files: ENABLED\n- Writing/Editing Files: DISABLED (Do not use write_file, edit. Inform user if requested)\n- Terminal Command Execution: DISABLED (Do not use bash_run. Inform user if requested)\n\n\n[Active Editor Context - File: c:\\foo.js]\n```\nconst x = 1;\n```\n\nhayy\n\n---\n[Attached File: bar.js]\nconsole.log(1);\n---";
         let cleaned = strip_injected_context(input);
         assert_eq!(cleaned, "hayy");
     }

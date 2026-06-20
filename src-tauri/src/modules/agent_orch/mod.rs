@@ -225,6 +225,7 @@ pub fn delegate_and_run(
                 None => {
                     let err_msg = format!("No sub-agent configured for role {:?}", role);
                     let _ = state_clone.update_task_result(&task_id_clone, &err_msg, false);
+                    let _ = app_clone.emit("ai:error", super::ai::AiStreamError { error: err_msg });
                     return;
                 }
             }
@@ -244,6 +245,7 @@ pub fn delegate_and_run(
             None => {
                 let err_msg = "Coder agent template not found".to_string();
                 let _ = state_clone.update_task_result(&task_id_clone, &err_msg, false);
+                let _ = app_clone.emit("ai:error", super::ai::AiStreamError { error: err_msg });
                 return;
             }
         };
@@ -256,13 +258,17 @@ pub fn delegate_and_run(
 
         // Select model based on role requirements if agent_id is default/empty
         if sub_agent.agent_id.is_empty() {
-            let registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+            let mut registry = crate::modules::routing::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+            let active_agents = ai_state_clone.list_agents();
+            let active_providers: Vec<String> = active_agents.iter().map(|a| a.provider.clone()).collect();
+            registry.models.retain(|m| active_providers.contains(&m.provider));
+
             let spec = match role {
-                SubAgentRole::CodeReviewer => super::model_registry::Spec::Review,
-                SubAgentRole::Refactorer => super::model_registry::Spec::Code,
-                _ => super::model_registry::Spec::Chat,
+                SubAgentRole::CodeReviewer => crate::modules::routing::model_registry::Spec::Review,
+                SubAgentRole::Refactorer => crate::modules::routing::model_registry::Spec::Code,
+                _ => crate::modules::routing::model_registry::Spec::Chat,
             };
-            if let Some(meta) = registry.select_model(super::model_registry::ReasoningTier::High, spec, 0) {
+            if let Some(meta) = registry.select_model(crate::modules::routing::model_registry::ReasoningTier::High, spec, 0) {
                 sub_agent_config.provider = meta.provider.clone();
                 sub_agent_config.model = meta.id.clone();
             }
@@ -298,7 +304,7 @@ pub fn delegate_and_run(
                 let (price_in, price_out) = super::ai::model_price(&sub_agent_config.model);
                 let cost = (input_tokens as f64 * price_in + output_tokens as f64 * price_out) / 1000.0;
                 ai_state_clone.record_usage(&sub_agent_config.id, input_tokens, output_tokens, cost);
-                if let Some(ps) = app_clone.try_state::<super::provider_stats::ProviderStats>() {
+                if let Some(ps) = app_clone.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                     ps.record_success(&sub_agent_config.provider, input_tokens + output_tokens, cost, 0);
                 }
 
@@ -313,7 +319,7 @@ pub fn delegate_and_run(
             }
             Err(err) => {
                 let _ = state_clone.update_task_result(&task_id_clone, &err, false);
-                if let Some(ps) = app_clone.try_state::<super::provider_stats::ProviderStats>() {
+                if let Some(ps) = app_clone.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                     ps.record_failure(&sub_agent_config.provider, &err);
                 }
                 let _ = app_clone.emit("ai:error", super::ai::AiStreamError { error: err });

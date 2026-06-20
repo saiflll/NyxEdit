@@ -28,8 +28,9 @@
   import SSHExplorer from "$lib/components/SSHExplorer.svelte";
   import { 
     currentDir, addToast, aiSendRequest, activeSshProfile, activeFile, fileContent, type Agent,
-    reviewFindings, isReviewing, graphStatus, systemHealth, costSummary
+    reviewFindings, isReviewing, graphStatus, systemHealth, costSummary, loadWorkspace, workspaceFolders
   } from "$lib/stores.svelte";
+  import { get } from "svelte/store";
   import { onMount } from "svelte";
   import { getStoredTheme, getStoredFont, applyTheme, applyFont } from "$lib/themes";
   import { setExtensionIcons, getExtensionIcons } from "$lib/icon-overrides";
@@ -170,14 +171,74 @@
   // Import logger dengan cleanup otomatis
   import { createLogger } from "$lib/utils/tabHelpers";
   
+  // ─── Network & All AI Cost ────────────────────
+  let pingGithub = $state<number | null>(null);
+  let isOnline = $state(true);
+  let totalAllAiCost = $state(0.0);
+  let registeredAgentsCount = $state(0);
+  let signalBars = $derived(!isOnline || pingGithub === null ? 0 : pingGithub < 150 ? 4 : pingGithub < 300 ? 3 : pingGithub < 600 ? 2 : 1);
+
+  async function checkGithubLatency() {
+    isOnline = navigator.onLine;
+    if (!isOnline) {
+      pingGithub = null;
+      return;
+    }
+    const start = performance.now();
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      await fetch("https://api.github.com/meta", { 
+        method: "HEAD", 
+        mode: "no-cors",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      pingGithub = Math.round(performance.now() - start);
+      isOnline = true;
+    } catch (e) {
+      pingGithub = null;
+      isOnline = false;
+    }
+  }
+
+  async function updateAllAiCost() {
+    try {
+      const list = await invoke<any[]>("ai_get_usage");
+      totalAllAiCost = list.reduce((sum, item) => sum + (item.total_cost || 0), 0);
+    } catch (e) {
+      console.warn("Failed to get all AI usage:", e);
+    }
+  }
+
+  async function updateRegisteredAgents() {
+    try {
+      const agentsList = await invoke<any[]>("ai_list_agents");
+      registeredAgentsCount = agentsList.length;
+    } catch {}
+  }
+
   let cleanupConsole: (() => void) | null = null;
   onMount(() => {
     cleanupConsole = createLogger(addLog);
     addLog("App started");
-    showLogs = true;
+    showLogs = false; // thin by default
+    
+    checkGithubLatency();
+    const netInterval = setInterval(checkGithubLatency, 15000);
+
+    updateAllAiCost();
+    updateRegisteredAgents();
+
+    const unsubDonePromise = listen("ai:done", () => {
+      updateAllAiCost();
+    });
     
     return () => {
       if (cleanupConsole) cleanupConsole();
+      clearInterval(netInterval);
+      unsubDonePromise.then(unsub => unsub());
     };
   });
 
@@ -218,6 +279,80 @@
 
   // ─── Tab management ───────────────────────────
   let addMenuOpen = $state(false);
+  let nyxMenuOpen = $state(false);
+
+  async function handleOpenWorkspace() {
+    try {
+      const selected = await openDialog({
+        directory: false,
+        multiple: false,
+        filters: [{
+          name: "NyxEdit Workspace",
+          extensions: ["workspace"]
+        }]
+      });
+      if (selected && typeof selected === "string") {
+        const content = await invoke<string>("fs_read_file", { path: selected });
+        const data = JSON.parse(content);
+        if (data && Array.isArray(data.folders)) {
+          const folders = data.folders.map((f: any) => {
+            if (f && typeof f === "object" && typeof f.path === "string") {
+              return f.path;
+            }
+            return String(f);
+          });
+          loadWorkspace(folders);
+          addToast("Workspace loaded successfully", "success");
+        }
+      }
+    } catch (e) {
+      console.error("Load workspace error:", e);
+      addToast("Failed to load workspace file", "error");
+    }
+  }
+
+  async function handleSaveWorkspace() {
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const selected = await save({
+        filters: [{
+          name: "NyxEdit Workspace",
+          extensions: ["workspace"]
+        }],
+        defaultPath: "project.workspace"
+      });
+      if (selected && typeof selected === "string") {
+        const folders = get(workspaceFolders);
+        const workspaceData = {
+          folders
+        };
+        const content = JSON.stringify(workspaceData, null, 2);
+        await invoke("fs_write_file", { path: selected, content });
+        addToast("Workspace saved successfully", "success");
+      }
+    } catch (e) {
+      console.error("Save workspace error:", e);
+      addToast("Failed to save workspace", "error");
+    }
+  }
+
+  async function handleAddFolderToWorkspace() {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+      });
+      if (selected && typeof selected === "string") {
+        const folders = get(workspaceFolders);
+        if (!folders.includes(selected)) {
+          loadWorkspace([...folders, selected]);
+          addToast("Folder added to workspace", "success");
+        }
+      }
+    } catch (e) {
+      console.error("Add folder error:", e);
+    }
+  }
 
   function addTab(type: TabType, extra?: Partial<Tab>) {
     const base = TAB_LABELS[type];
@@ -480,6 +615,10 @@
       } catch (e) {
         console.warn("Failed to get cost summary:", e);
       }
+      try {
+        await updateAllAiCost();
+        await updateRegisteredAgents();
+      } catch {}
     };
     
     updateStats();
@@ -494,7 +633,6 @@
         await ensureNyxDir();
         // 1. Notify AI backend of workspace root for agent logs
         invoke("ai_set_workspace", { root: val }).catch(() => {});
-        showLogs = true;
 
         // 2. Proactively detect project framework
         addLog(`Detecting framework for: ${val}...`, "info");
@@ -836,6 +974,16 @@
   let resizeStartX = $state(0);
   let resizeStartWidth = $state(260);
 
+  // AI Chat resizability
+  let aiWidth = $state(380);
+  let aiHeight = $state(440);
+  let isAiResizing = $state(false);
+  let aiResizeMode = $state<"w" | "n" | "nw" | null>(null);
+  let aiResizeStartX = 0;
+  let aiResizeStartY = 0;
+  let aiResizeStartWidth = 0;
+  let aiResizeStartHeight = 0;
+
   function onResizeStart(e: MouseEvent) {
     isResizing = true;
     resizeStartX = e.clientX;
@@ -843,18 +991,45 @@
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }
-  function onResizeMove(e: MouseEvent) {
-    if (!isResizing) return;
-    sidebarWidth = Math.max(180, Math.min(480, resizeStartWidth + (e.clientX - resizeStartX)));
+
+  function onAiResizeStart(e: MouseEvent, mode: "w" | "n" | "nw") {
+    e.preventDefault();
+    e.stopPropagation();
+    isAiResizing = true;
+    aiResizeMode = mode;
+    aiResizeStartX = e.clientX;
+    aiResizeStartY = e.clientY;
+    aiResizeStartWidth = aiWidth;
+    aiResizeStartHeight = aiHeight;
+    document.body.style.cursor = mode === "nw" ? "nwse-resize" : mode === "w" ? "ew-resize" : "ns-resize";
+    document.body.style.userSelect = "none";
   }
+
+  function onResizeMove(e: MouseEvent) {
+    if (isResizing) {
+      sidebarWidth = Math.max(180, Math.min(480, resizeStartWidth + (e.clientX - resizeStartX)));
+    } else if (isAiResizing && aiResizeMode) {
+      if (aiResizeMode.includes("w")) {
+        const deltaX = aiResizeStartX - e.clientX;
+        aiWidth = Math.max(300, Math.min(800, aiResizeStartWidth + deltaX));
+      }
+      if (aiResizeMode.includes("n")) {
+        const deltaY = aiResizeStartY - e.clientY;
+        aiHeight = Math.max(350, Math.min(800, aiResizeStartHeight + deltaY));
+      }
+    }
+  }
+
   function onResizeEnd() {
     isResizing = false;
+    isAiResizing = false;
+    aiResizeMode = null;
     document.body.style.cursor = "";
-    document.body.style.userSelect = "none";
+    document.body.style.userSelect = "";
   }
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} onmousemove={onResizeMove} onmouseup={onResizeEnd} onclick={() => (addMenuOpen = false)} />
+<svelte:window onkeydown={handleGlobalKeydown} onmousemove={onResizeMove} onmouseup={onResizeEnd} onclick={() => { addMenuOpen = false; nyxMenuOpen = false; }} />
 
 <div class="workspace">
   <!-- Custom Background Backdrop -->
@@ -863,15 +1038,41 @@
   <header class="tab-bar" onmousedown={handleHeaderMousedown}>
     <!-- Left tools -->
     <div class="tab-bar-left">
-      <button class="tool-btn" onclick={triggerOpenFile} title="Open File">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-      </button>
-      <button class="tool-btn" onclick={triggerOpenFolder} title="Open Folder">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      </button>
-      <button class="tool-btn" onclick={openSettingsTab} title="Settings">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
+      <div class="nyx-menu-container" style="position: relative; display: inline-block; -webkit-app-region: no-drag;">
+        <button class="tool-btn nyx-logo-btn" onclick={(e) => { e.stopPropagation(); nyxMenuOpen = !nyxMenuOpen; }} title="Nyx Actions" style="padding: 2px; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;">
+          <img src="/logo.png" alt="Nyx Logo" style="width: 14px; height: 14px; display: inline-block; vertical-align: middle; border-radius: 3px;" />
+        </button>
+        
+        {#if nyxMenuOpen}
+          <div class="nyx-dropdown-menu" onclick={(e) => e.stopPropagation()} role="presentation">
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; triggerOpenFile(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span>Open File</span>
+            </button>
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; triggerOpenFolder(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>Open Folder</span>
+            </button>
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; handleOpenWorkspace(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              <span>Open Workspace</span>
+            </button>
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; handleSaveWorkspace(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/><line x1="12" y1="13" x2="12" y2="17"/><line x1="10" y1="15" x2="14" y2="15"/></svg>
+              <span>Save Workspace</span>
+            </button>
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; handleAddFolderToWorkspace(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+              <span>Add Folder to Workspace</span>
+            </button>
+            <hr class="nyx-dropdown-divider"/>
+            <button class="nyx-dropdown-item" onclick={() => { nyxMenuOpen = false; openSettingsTab(); }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              <span>Settings</span>
+            </button>
+          </div>
+        {/if}
+      </div>
       <span class="bar-divider"></span>
       <button class="tool-btn" class:active={sidebarView !== null} onclick={() => toggleSidebar(sidebarView === null ? "files" : null)} title="Explorer">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
@@ -1175,7 +1376,7 @@
       {#each tabs as tab (tab.id)}
         <div class="tab-panel" class:hidden={activeTabId !== tab.id}>
           {#if tab.type === "terminal"}
-            <SplitTerminal cwd={primaryCwd} onCwdChange={onTerminalCwdChange} initialCommand={tab.initialCommand} />
+            <SplitTerminal active={activeTabId === tab.id} cwd={primaryCwd} onCwdChange={onTerminalCwdChange} initialCommand={tab.initialCommand} />
           {:else if tab.type === "file"}
             {#if tab.filePath && tab.fileContent !== undefined}
               <ViewerRouter
@@ -1224,6 +1425,7 @@
                 AI Restricted — AI cannot access this terminal
               </div>
               <SplitTerminal
+                active={activeTabId === tab.id}
                 cwd={primaryCwd}
                 onCwdChange={onTerminalCwdChange}
                 onSessionCreated={(sid: string) => markSessionPrivate(sid)}
@@ -1295,27 +1497,58 @@
       {/if}
     </div>
 
-    <div class="sb-center" onclick={() => (showLogs = !showLogs)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (showLogs = !showLogs)} title="Toggle logs">
-      <span class="sb-clock">{fmtTime(now)}</span>
+    <div class="sb-center" onclick={() => (showLogs = !showLogs)} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (showLogs = !showLogs)} title="Toggle logs" style="max-width: 40%; display: flex; align-items: center; gap: 8px;">
+      <span class="sb-clock" style="font-weight: 700;">{fmtTime(now)}</span>
       <span class="sb-log-badge" class:sb-log-has-error={logs.some(l => l.type === "error")}>{logs.length}</span>
+      {#if logs.length > 0}
+        <span class="sb-log-thin-preview" style="font-size: var(--fs-9-5); color: var(--text-muted); opacity: 0.6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;" title="Latest log: {logs[logs.length - 1].msg}">
+          | {logs[logs.length - 1].msg}
+        </span>
+      {/if}
     </div>
 
     <div class="sb-right">
       {#if agentSwarmStatus && agentSwarmStatus !== "Idle"}
         <span class="sb-swarm-badge" title="Agent Swarm Status: {agentSwarmStatus}">
           <span class="swarm-pulse"></span>
-          🤖 Swarm: {agentSwarmStatus}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 4px; animation: spin 4s linear infinite;"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Swarm: {agentSwarmStatus}
+        </span>
+      {/if}
+
+      <!-- Internet Connection and GitHub Latency Indicator -->
+      <span class="sb-net-badge" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 4px; font-size: var(--fs-9-5); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); color: var(--text-muted);" title={isOnline ? `Online (Latency to GitHub: ${pingGithub !== null ? pingGithub + 'ms' : 'calculating...'})` : 'Offline'}>
+        <svg width="12" height="9" viewBox="0 0 16 12" style="display: inline-block; vertical-align: middle;">
+          <rect x="1" y="9" width="2" height="3" rx="0.5" fill={signalBars >= 1 ? 'var(--accent-green)' : 'var(--text-muted)'} opacity={signalBars >= 1 ? 1 : 0.35} />
+          <rect x="5" y="6" width="2" height="6" rx="0.5" fill={signalBars >= 2 ? 'var(--accent-green)' : 'var(--text-muted)'} opacity={signalBars >= 2 ? 1 : 0.35} />
+          <rect x="9" y="3" width="2" height="9" rx="0.5" fill={signalBars >= 3 ? 'var(--accent-green)' : 'var(--text-muted)'} opacity={signalBars >= 3 ? 1 : 0.35} />
+          <rect x="13" y="0" width="2" height="12" rx="0.5" fill={signalBars >= 4 ? 'var(--accent-green)' : 'var(--text-muted)'} opacity={signalBars >= 4 ? 1 : 0.35} />
+        </svg>
+        {#if isOnline}
+          <span style="color: var(--text-muted); font-family: monospace; font-size: var(--fs-9-5);">{pingGithub !== null ? `${pingGithub}ms` : 'checking...'}</span>
+        {:else}
+          <span style="color: var(--accent-red); font-weight: bold; font-size: var(--fs-9-5);">Offline</span>
+        {/if}
+      </span>
+
+      <!-- Total Cost Badge for all Registered AI agents -->
+      {#if totalAllAiCost > 0}
+        <span class="sb-budget-badge" style="background: color-mix(in srgb, var(--accent-purple) 15%, transparent); color: var(--accent-purple); border: 1px solid color-mix(in srgb, var(--accent-purple) 25%, transparent);" title="Total Cost (All Registered AIs: {registeredAgentsCount} agents): ${totalAllAiCost.toFixed(5)}">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 3px;"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="15" x2="8" y2="15"/><line x1="16" y1="15" x2="16" y2="15"/></svg>
+          ${totalAllAiCost.toFixed(4)}
         </span>
       {/if}
 
       {#if $costSummary && $costSummary.limit > 0}
         <span class="sb-budget-badge" class:sb-budget-high={$costSummary.total_cost >= $costSummary.limit * 0.9} title="Total Cost: ${$costSummary.total_cost.toFixed(4)} / Limit: ${$costSummary.limit.toFixed(2)}">
-          💰 ${$costSummary.total_cost.toFixed(3)}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 3px;"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          ${$costSummary.total_cost.toFixed(3)}
         </span>
       {/if}
 
       <span class="sb-health-badge" class:sb-health-degraded={!$systemHealth.ok} onclick={() => { sidebarView = "files"; workspaceMode = "explorer"; activeTabId = "tab-settings"; let hasSettings = tabs.some(t => t.id === "tab-settings"); if (!hasSettings) { tabs = [...tabs, { id: "tab-settings", type: "settings", label: "Settings" }]; } }} role="button" tabindex="0" onkeydown={(e) => e.key === "Enter" && (activeTabId = "tab-settings")} title="System Health: {$systemHealth.status || 'Healthy'}">
-        {$systemHealth.ok ? '❤️' : '💔'} Health
+        <svg width="11" height="11" viewBox="0 0 24 24" fill={ $systemHealth.ok ? "var(--accent-green)" : "var(--accent-red)" } stroke={ $systemHealth.ok ? "var(--accent-green)" : "var(--accent-red)" } stroke-width="2" style="display: inline-block; vertical-align: middle; margin-right: 3px;"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        Health
       </span>
 
       {#if degradedCount > 0}
@@ -1330,7 +1563,12 @@
   </footer>
 
   <!-- Floating AI Chat -->
-  <div class="float-panel float-ai" class:hidden={!showFloatingAi}>
+  <div class="float-panel float-ai" class:hidden={!showFloatingAi} style="width: {aiWidth}px; height: {aiHeight}px;">
+    <!-- Resize Handles -->
+    <div class="ai-resize-handle ai-resize-w" onmousedown={(e) => onAiResizeStart(e, "w")} role="presentation"></div>
+    <div class="ai-resize-handle ai-resize-n" onmousedown={(e) => onAiResizeStart(e, "n")} role="presentation"></div>
+    <div class="ai-resize-handle ai-resize-nw" onmousedown={(e) => onAiResizeStart(e, "nw")} role="presentation"></div>
+    
     <div class="float-body"><AIChat
       bind:this={aiChatRef}
       onOpenDiff={handleOpenDiffTab}
@@ -1673,9 +1911,36 @@
   /* Floating panels */
   .float-panel { position:fixed; bottom:calc(var(--status-bar-height) + 8px); width:360px; height:440px; background:var(--bg-secondary); border:1px solid var(--border-primary); border-radius:12px; box-shadow:0 8px 32px rgba(0,0,0,0.5); display:flex; flex-direction:column; overflow:hidden; z-index:100; animation:floatUp 0.2s ease; }
   .float-ai { right:12px; }
+  .ai-resize-handle {
+    position: absolute;
+    background: transparent;
+    z-index: 1000;
+  }
+  .ai-resize-w {
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+  }
+  .ai-resize-n {
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 6px;
+    cursor: ns-resize;
+  }
+  .ai-resize-nw {
+    left: 0;
+    top: 0;
+    width: 12px;
+    height: 12px;
+    cursor: nwse-resize;
+    z-index: 1001;
+  }
   .float-runner { left:12px; }
-  .float-logs { right:calc(360px + 20px); width:380px; height:320px; }
-  @keyframes floatUp { from { opacity:0; transform:translateY(16px) scale(0.96); } to { opacity:1; transform:translateY(0) scale(1); } }
+  .float-logs { position:fixed; right:0; top:34px; bottom:var(--status-bar-height); width:350px; height:calc(100vh - 34px - var(--status-bar-height)); background:var(--bg-secondary); border:none; border-left:1px solid var(--border-primary); border-radius:0; box-shadow:-4px 0 24px rgba(0,0,0,0.35); z-index:1005; animation:slideInRight 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
   .float-header { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--bg-surface); border-bottom:1px solid var(--border-subtle); font-size:var(--font-size); font-weight:600; color:var(--text-primary); }
   .float-close { background:none; border:none; color:var(--text-muted); padding:2px 5px; cursor:pointer; border-radius:3px; font-size:var(--fs-16); line-height:1; }
   .float-close:hover { color:var(--accent-red); background:var(--bg-hover); }
@@ -1896,5 +2161,54 @@
     border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);
     background: color-mix(in srgb, var(--accent-red) 8%, transparent);
     animation: pulse-red 2s infinite;
+  }
+
+  .tab-bar {
+    z-index: 2000 !important;
+  }
+  /* consolidated dropdown menu styling */
+  .nyx-dropdown-menu {
+    position: absolute;
+    top: 30px;
+    left: 0;
+    z-index: 9999 !important;
+    min-width: 180px;
+    background: var(--glass-bg, rgba(23, 23, 23, 0.85));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
+    border-radius: 8px;
+    padding: 4px;
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
+    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 1px 0 rgba(255, 255, 255, 0.15) inset;
+    animation: cmIn 0.1s ease;
+  }
+  .nyx-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: var(--fs-11);
+    cursor: pointer;
+    border-radius: 5px;
+    transition: all 0.12s ease;
+    white-space: nowrap;
+    text-align: left;
+    box-sizing: border-box;
+  }
+  .nyx-dropdown-item:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .nyx-dropdown-item svg {
+    flex-shrink: 0;
+  }
+  .nyx-dropdown-divider {
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    margin: 4px 0;
   }
 </style>

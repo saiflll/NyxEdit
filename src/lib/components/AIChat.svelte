@@ -3,10 +3,11 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { marked } from "marked";
   import DOMPurify from "dompurify";
-  import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent, agents as globalAgents, addToast, openFile } from "../stores.svelte";
+  import { aiSendRequest, type Agent, type ChatMessage, type ChatSession, type AiToolCallEvent, type AiToolResultEvent, currentDir, activeTerminalSessionId, activeFile, fileContent, agents as globalAgents, addToast, openFile, workspaceFolders } from "../stores.svelte";
   import { getIdleState } from "$lib/idle.svelte";
   import { get } from "svelte/store";
   import AIDiffViewer from "./AIDiffViewer.svelte";
+  import DagVisualizationPanel from "./DagVisualizationPanel.svelte";
   import { getActiveSettings } from "$lib/nyxConfig";
 
   interface Props {
@@ -245,6 +246,7 @@
   let unlistenRouteProgress: UnlistenFn | null = null;
 
   let chainSteps = $state<{ index: number; label: string; status: "pending" | "active" | "completed" | "error" }[]>([]);
+  let routeStatusText = $state<string | null>(null);
 
   type DagProgressNode = {
     id: string;
@@ -400,6 +402,30 @@
   }
   function cancelRename() { renameSessionId = null; }
 
+  // Session header renaming
+  let isEditingHeaderName = $state(false);
+  let headerNameValue = $state("");
+  function startHeaderRename() {
+    if (!currentSessionId) return;
+    const session = sessions.find(s => s.id === currentSessionId);
+    if (session) {
+      headerNameValue = session.name;
+      isEditingHeaderName = true;
+    }
+  }
+  async function commitHeaderRename() {
+    if (!currentSessionId || !headerNameValue.trim()) { isEditingHeaderName = false; return; }
+    const session = sessions.find(s => s.id === currentSessionId);
+    if (session) {
+      session.name = headerNameValue.trim();
+      try {
+        await invoke("ai_save_session", { session });
+        await loadSessions();
+      } catch { /* ignore */ }
+    }
+    isEditingHeaderName = false;
+  }
+
   function summarizeFirstMessage(text: string): string {
     let clean = text.replace(/\[.*?\]\s*/g, '').trim();
     clean = clean.split('\n')[0].trim();
@@ -531,11 +557,8 @@
         }));
         return;
       }
-      const last = messages[messages.length - 1];
-      if (last) {
-        last.content = `*(${msg})*\n\n` + last.content;
-      }
-      messages = [...messages];
+      // 7. Fallback — store as status text only (do NOT prepend to message content)
+      routeStatusText = msg;
     });
 
     unlistenToolCall = await listen<AiToolCallEvent>("ai:tool_call", (e) => {
@@ -589,6 +612,7 @@
         dagNodes = dagNodes.map(n => ({ ...n, status: "completed" as const }));
         dagNodes = [];
       }
+      routeStatusText = null;
       // Build content prefix for legacy compat (parseMessageMeta still works)
       const prefix = streamingAgent ? `[${streamingAgent}]` : `[${p.provider}/${p.model}]`;
       messages[messages.length - 1] = {
@@ -635,7 +659,13 @@
     });
 
     const chatMessages = messages.slice(0, -1).map((m) => ({ role: m.role, content: m.content }));
-    const workspaceRoot = get(currentDir) || "";
+    let workspaceRoot = get(currentDir) || "";
+    if (!workspaceRoot) {
+      const folders = get(workspaceFolders);
+      if (folders && folders.length > 0) {
+        workspaceRoot = folders[0];
+      }
+    }
     const activeSession = get(activeTerminalSessionId);
     await invoke("ai_chat_stream", {
       agentId,
@@ -930,6 +960,42 @@
       <button class="ai-btn ai-btn-ghost" onclick={() => sessionsOpen = !sessionsOpen} title="Sessions">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
       </button>
+
+      <!-- Active Session Title and Inline Editor -->
+      <div class="ai-header-title-container" style="display: flex; align-items: center; gap: 4px; overflow: hidden; max-width: 140px; margin-left: 4px;">
+        {#if currentSessionId}
+          {@const activeSession = sessions.find(s => s.id === currentSessionId)}
+          {#if activeSession}
+            {#if isEditingHeaderName}
+              <input
+                class="ai-header-rename-input"
+                bind:value={headerNameValue}
+                onkeydown={(e) => { if (e.key === 'Enter') commitHeaderRename(); if (e.key === 'Escape') isEditingHeaderName = false; }}
+                onblur={commitHeaderRename}
+                autofocus
+                style="background: var(--bg-primary); border: 1px solid var(--accent-blue); border-radius: 4px; padding: 2px 6px; font-size: var(--fs-10); color: var(--text-primary); outline: none; width: 100px;"
+              />
+            {:else}
+              <span 
+                class="ai-header-session-name" 
+                onclick={startHeaderRename} 
+                role="button" 
+                tabindex="0" 
+                onkeydown={(e) => e.key === 'Enter' && startHeaderRename()}
+                style="font-size: var(--fs-10-5); font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;"
+              >
+                {activeSession.name}
+              </span>
+              <button class="ai-btn ai-btn-ghost" onclick={startHeaderRename} title="Rename session" style="padding: 1px; width: 14px; height: 14px; opacity: 0.5;">
+                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+            {/if}
+          {/if}
+        {:else if messages.length > 0}
+          <span class="ai-header-session-name-unsaved" style="font-size: var(--fs-10-5); font-weight: 600; color: var(--text-muted);">New Chat</span>
+        {/if}
+      </div>
+
       <div class="ai-header-spacer"></div>
       <button class="ai-btn ai-btn-ghost" onclick={clearChat} title="Clear chat">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
@@ -946,6 +1012,25 @@
     </div>
 
     <div class="ai-messages" bind:this={messagesContainer}>
+      {#if messages.length === 0}
+        <div class="ai-chat-welcome">
+          <div class="nyx-pulse-logo">
+            <svg width="40" height="40" viewBox="0 0 100 100" fill="none" style="filter: drop-shadow(0 0 12px var(--accent-blue));">
+              <path d="M50 15L15 85H85L50 15Z" stroke="var(--accent-blue)" stroke-width="6" stroke-linejoin="round" fill="rgba(0, 168, 255, 0.1)"/>
+              <circle cx="50" cy="55" r="15" stroke="var(--accent-cyan)" stroke-width="4" fill="rgba(0, 210, 255, 0.2)"/>
+              <path d="M50 35L45 55H55L50 35Z" fill="var(--accent-cyan)"/>
+            </svg>
+          </div>
+          <h2 class="welcome-title">
+            {#if currentSessionId}
+              {sessions.find(s => s.id === currentSessionId)?.name || "Chat Session"}
+            {:else}
+              NyxEdit AI Agent
+            {/if}
+          </h2>
+          <p class="welcome-subtitle">Ask me anything about your project. I can write code, run commands, perform audits, and answer complex questions using context-routing reasoning.</p>
+        </div>
+      {/if}
       {#each messages as msg, i}
         {@const meta = parseMessageMeta(msg.content)}
         <div class="msg" class:msg-user={msg.role === "user"} class:msg-system={msg.role === "system"} class:msg-assistant={msg.role === "assistant"}>
@@ -968,6 +1053,10 @@
                   </div>
                 {/if}
                 {#if msg.content}
+                  <!-- DAG Visualization Panel: show when dag is active -->
+                  {#if dagNodes.length > 0}
+                    <DagVisualizationPanel nodes={dagNodes} />
+                  {/if}
                   <div class="md-content">{@html markedParse(meta.cleanContent)}</div>
                   {@const reviewFindings = extractReviewFindings(meta.cleanContent)}
                   {#if reviewFindings.length > 0}
@@ -1003,6 +1092,11 @@
                   {/if}
                 {:else if toolCalls.size === 0}
                   <span class="thinking-text">Thinking<span class="dots"><span>.</span><span>.</span><span>.</span></span></span>
+                  {#if routeStatusText}
+                    <div style="font-size: var(--fs-9); color: var(--text-muted); margin-top: 6px; font-style: italic; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">
+                      {routeStatusText}
+                    </div>
+                  {/if}
                 {/if}
               {:else}
                 <div class="md-content">{@html markedParse(meta.cleanContent)}</div>
@@ -1200,7 +1294,26 @@
 
 <style>
   .ai-wrapper { display:flex; height:100%; position:relative; }
-  .ai-sessions { width:220px; flex-shrink:0; border-right:1px solid var(--border-subtle); display:flex; flex-direction:column; background:var(--bg-primary); }
+  .ai-sessions {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 220px;
+    z-index: 15;
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    background: var(--glass-bg, var(--bg-secondary, rgba(23, 23, 23, 0.95)));
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 5px 0 15px rgba(0, 0, 0, 0.35);
+    animation: slideIn 0.15s ease-out;
+  }
+  @keyframes slideIn {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(0); }
+  }
   .ai-sessions-header { display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-bottom:1px solid var(--border-subtle); }
   .ai-sessions-title { font-size:var(--fs-10); font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); }
   .ai-session-new { display:flex; align-items:center; gap:4px; padding:5px 8px; margin:4px 6px; background:var(--bg-hover); border:none; border-radius:4px; color:var(--text-primary); font-size:var(--fs-11); cursor:pointer; transition:all 0.12s ease; }
@@ -1368,5 +1481,40 @@
   .perm-accept { background: var(--accent-blue); color: var(--bg-primary); }
   .perm-accept:hover { filter: brightness(1.15); }
 
-
+  /* welcome screen styling */
+  .ai-chat-welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 30px 20px;
+    text-align: center;
+    flex: 1;
+    color: var(--text-muted);
+  }
+  .nyx-pulse-logo {
+    margin-bottom: 16px;
+    animation: pulseLogo 3s ease-in-out infinite;
+  }
+  @keyframes pulseLogo {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.05); opacity: 1; filter: drop-shadow(0 0 18px var(--accent-blue)); }
+  }
+  .welcome-title {
+    font-size: var(--fs-13);
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    display: inline-block;
+  }
+  .welcome-subtitle {
+    font-size: var(--fs-10);
+    max-width: 280px;
+    line-height: 1.5;
+    margin: 0;
+  }
 </style>

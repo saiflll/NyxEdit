@@ -34,6 +34,21 @@
     }
   }
 
+  async function pickFile() {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        defaultPath: currentPath || undefined,
+      });
+      if (selected && typeof selected === "string") {
+        onFileOpen(selected);
+      }
+    } catch (e) {
+      console.error("File picker error:", e);
+    }
+  }
+
   async function addFolderToWorkspace() {
     try {
       const selected = await open({
@@ -667,20 +682,6 @@
             Workspace ({foldersList.length})
           {/if}
         </span>
-        <button class="fm-btn" onclick={addFolderToWorkspace} title="Add Folder to Workspace">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            <line x1="12" y1="11" x2="12" y2="17"/>
-            <line x1="9" y1="14" x2="15" y2="14"/>
-          </svg>
-        </button>
-        <button class="fm-btn" onclick={saveWorkspace} title="Save Workspace As...">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-            <polyline points="17 21 17 13 7 13 7 21"/>
-            <polyline points="7 3 7 8 15 8"/>
-          </svg>
-        </button>
         <button class="fm-btn" onclick={() => { showNewFolder = !showNewFolder; showNewFile = false; }} title="New Folder">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
@@ -696,11 +697,23 @@
 
   {#if foldersList.length === 0}
     <div class="fm-no-workspace">
-      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom:12px; color:var(--text-muted);"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-      <p class="fm-no-workspace-text">No folder opened in workspace</p>
-      <div style="display: flex; gap: 8px;">
-        <button class="fm-open-btn" onclick={pickFolder}>Open Folder</button>
-        <button class="fm-open-btn" style="background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-primary);" onclick={openWorkspaceFile}>Open Workspace</button>
+      <div class="fm-empty-icon-container">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      </div>
+      <p class="fm-no-workspace-text">Workspace is empty</p>
+      <div class="fm-action-group">
+        <button class="fm-action-btn fm-primary" onclick={pickFolder}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-right: 4px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Open Folder
+        </button>
+        <button class="fm-action-btn fm-secondary" onclick={openWorkspaceFile}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Open Workspace
+        </button>
+        <button class="fm-action-btn fm-secondary" onclick={pickFile}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Open File
+        </button>
       </div>
     </div>
   {:else}
@@ -790,10 +803,15 @@
   .fm-btn { background:none; border:none; color:var(--text-muted); padding:2px; cursor:pointer; border-radius:3px; display:flex; }
   .fm-btn:hover { color:var(--text-primary); background:var(--bg-hover); }
 
-  .fm-no-workspace { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 24px; text-align: center; }
-  .fm-no-workspace-text { font-size: var(--fs-11); color: var(--text-muted); margin-bottom: 16px; }
-  .fm-open-btn { background: var(--accent-blue); color: var(--bg-primary); border: none; border-radius: 6px; padding: 8px 16px; font-size: var(--fs-11); font-weight: 600; cursor: pointer; transition: filter 0.15s ease; }
-  .fm-open-btn:hover { filter: brightness(1.15); }
+  .fm-no-workspace { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; padding: 20px; text-align: center; }
+  .fm-no-workspace-text { font-size: var(--fs-11); color: var(--text-muted); margin-bottom: 16px; font-weight: 500; }
+  .fm-empty-icon-container { background: rgba(255, 255, 255, 0.02); border: 1.5px dashed var(--border-subtle); border-radius: 50%; width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--text-muted); margin-bottom: 12px; }
+  .fm-action-group { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 180px; }
+  .fm-action-btn { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border-radius: 6px; font-size: var(--fs-10-5); font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: all 0.15s ease; width: 100%; }
+  .fm-primary { background: var(--accent-blue); color: var(--bg-primary); }
+  .fm-primary:hover { filter: brightness(1.15); }
+  .fm-secondary { background: rgba(255, 255, 255, 0.04); color: var(--text-secondary); border-color: var(--border-subtle); }
+  .fm-secondary:hover { background: rgba(255, 255, 255, 0.08); color: var(--text-primary); border-color: var(--text-muted); }
 
   .fm-new-row { display:flex; align-items:center; gap:4px; padding:4px 10px; border-bottom:1px solid var(--border-subtle); }
   .fm-new-input { flex:1; background:var(--bg-surface); border:1px solid var(--accent-blue); border-radius:4px; padding:3px 6px; font-size:var(--fs-11); color:var(--text-primary); font-family:monospace; min-width:0; }

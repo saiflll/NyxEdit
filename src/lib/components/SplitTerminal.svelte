@@ -4,13 +4,14 @@
   import { activeTerminalSessionId } from "../stores.svelte";
 
   let {
+    active = false,
     cwd = "",
     onCwdChange = (_cwd: string) => {},
     onSessionCreated = (_sessionId: string) => {},
     initialCommand = "",
   } = $props();
 
-  let prevCwd = $state(cwd);
+  let prevCwd = $state("");
 
   let terminalIds = $state(["term-1"]);
   let sessions = $state<Record<string, string>>({});
@@ -36,6 +37,10 @@
 
   // Sync workspace → terminal: when cwd prop changes externally, send cd
   $effect(() => {
+    if (prevCwd === "") {
+      prevCwd = cwd;
+      return;
+    }
     if (cwd && cwd !== prevCwd && terminalIds.length > 0) {
       const primaryId = primaryTerminalId();
       if (primaryId && sessions[primaryId]) {
@@ -202,6 +207,7 @@
         </div>
         <div class="tiling-cell-body">
           <Terminal
+            active={active}
             sessionId={sessions[id]}
             label={labels[id] || "0"}
             onReady={(sid: string) => handleSessionCreated(id, sid)}

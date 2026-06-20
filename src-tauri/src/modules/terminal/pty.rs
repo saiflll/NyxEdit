@@ -31,7 +31,7 @@ pub struct PtySession {
     pub rows: u16,
     pub cols: u16,
     #[cfg(target_os = "windows")]
-    _job: Option<super::job::PtyJob>,
+    _job: Option<crate::modules::execution::job::PtyJob>,
 }
 
 unsafe impl Send for PtySession {}
@@ -129,7 +129,7 @@ impl PtyManager {
 
         #[cfg(target_os = "windows")]
         let job = match child.process_id() {
-            Some(pid) => match super::job::PtyJob::create_for(pid) {
+            Some(pid) => match crate::modules::execution::job::PtyJob::create_for(pid) {
                 Ok(j) => Some(j),
                 Err(e) => {
                     log::warn!("pty job-object setup failed for pid={}: {}", pid, e);
@@ -195,7 +195,8 @@ impl PtyManager {
         let sessions = self.sessions.lock().unwrap();
         let session = sessions.get(session_id).ok_or("Session not found")?;
         let mut writer = session.writer.lock().unwrap();
-        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())
+        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())
     }
 
     pub fn resize_session(&self, session_id: &str, rows: u16, cols: u16) -> Result<(), String> {
@@ -213,7 +214,8 @@ impl PtyManager {
 
     pub fn close_session(&self, session_id: &str) -> Result<(), String> {
         let mut sessions = self.sessions.lock().unwrap();
-        sessions.remove(session_id);
+        let _session = sessions.remove(session_id);
+        drop(sessions);
         Ok(())
     }
 

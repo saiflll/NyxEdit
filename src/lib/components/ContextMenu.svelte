@@ -36,18 +36,26 @@
   .cm-backdrop { position:fixed; inset:0; z-index:300; }
   .cm-menu {
     position:fixed; z-index:301; min-width:160px;
-    background:var(--bg-elevated); border:1px solid var(--border-primary);
+    background: var(--glass-bg, rgba(23, 23, 23, 0.85));
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
     border-radius:8px; padding:4px;
-    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    backdrop-filter: blur(var(--glass-blur, 12px));
+    -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
+    box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.6), 0 0 1px 0 rgba(255, 255, 255, 0.15) inset;
     animation:cmIn 0.1s ease;
   }
   .cm-item {
     display:flex; align-items:center; gap:8px; width:100%;
     padding:6px 10px; border:none; background:transparent;
-    color:var(--text-primary); font-size:var(--font-size); cursor:pointer;
-    border-radius:5px; transition:all 0.1s ease; white-space:nowrap;
+    color:var(--text-secondary); font-size:var(--font-size); cursor:pointer;
+    border-radius:5px; transition:all 0.12s cubic-bezier(0.16, 1, 0.3, 1); white-space:nowrap;
+    text-align: left;
   }
-  .cm-item:hover { background:var(--bg-hover); }
+  .cm-item:hover {
+    color:var(--text-primary);
+    background:rgba(255, 255, 255, 0.06);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  }
   .cm-item.cm-danger:hover { color:var(--accent-red); background:color-mix(in srgb, var(--accent-red) 12%, transparent); }
   .cm-icon { display:flex; width:16px; justify-content:center; flex-shrink:0; }
   @keyframes cmIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }

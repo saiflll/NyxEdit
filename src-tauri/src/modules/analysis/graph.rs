@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use super::parsers;
-use super::symbol_graph::{EdgeKind, SymbolGraph, SymbolNode};
+use crate::modules::analysis::parsers;
+use crate::modules::analysis::symbol_graph::{EdgeKind, SymbolGraph, SymbolNode};
 
 #[derive(Clone)]
 pub struct GraphState {

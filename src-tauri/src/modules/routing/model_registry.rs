@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-const DEFAULT_MODELS_TOML: &str = include_str!("../../models.toml");
+const DEFAULT_MODELS_TOML: &str = include_str!("../../../models.toml");
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ReasoningTier {

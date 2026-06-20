@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use super::model_registry::{ReasoningTier, Spec};
-use super::routing_engine::{Intent, OutputType, RouteDecision};
+use crate::modules::routing::model_registry::{ReasoningTier, Spec};
+use crate::modules::routing::routing_engine::{Intent, OutputType, RouteDecision};
 
 /// Step type in a chain
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]

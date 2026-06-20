@@ -7,6 +7,10 @@ use tokio::sync::oneshot;
 use tauri::{Emitter, Manager};
 use chrono::Utc;
 
+pub mod models;
+pub mod pricing;
+pub use models::*;
+pub use pricing::*;
 
 
 #[derive(Clone, Serialize)]
@@ -143,40 +147,6 @@ pub struct AgentUsage {
     pub total_cost: f64,
 }
 
-pub fn model_price(model: &str) -> (f64, f64) {
-    let m = model.to_lowercase();
-    if m.contains("gpt-4o-mini") {
-        (0.00015, 0.0006)
-    } else if m.contains("gpt-4o") {
-        (0.0025, 0.01)
-    } else if m.contains("gpt-4") && !m.contains("turbo") {
-        (0.03, 0.06)
-    } else if m.contains("gpt-4-turbo") || m.contains("gpt-4-1106") {
-        (0.01, 0.03)
-    } else if m.contains("gpt-3.5-turbo") {
-        (0.0005, 0.0015)
-    } else if m.contains("claude-3-opus") || m.contains("claude-opus") {
-        (0.015, 0.075)
-    } else if m.contains("claude-3-sonnet") || m.contains("claude-sonnet") {
-        (0.003, 0.015)
-    } else if m.contains("claude-3-haiku") || m.contains("claude-haiku") {
-        (0.00025, 0.00125)
-    } else if m.contains("gemini-1.5-pro") || m.contains("gemini-pro") {
-        (0.00125, 0.005)
-    } else if m.contains("gemini-1.5-flash") || m.contains("gemini-flash") {
-        (0.000075, 0.0003)
-    } else if m.contains("gemini-2.0") || m.contains("gemini-2") {
-        (0.0001, 0.0004)
-    } else if m.contains("deepseek-chat") || m.contains("deepseek-v3") {
-        (0.00014, 0.00028)
-    } else if m.contains("deepseek-reasoner") || m.contains("deepseek-r1") {
-        (0.00055, 0.00219)
-    } else if m.contains("llama") || m.contains("mistral") || m.contains("mixtral") || m.contains("qwen") || m.contains("deepseek") {
-        (0.0005, 0.0015)
-    } else {
-        (0.001, 0.002)
-    }
-}
 
 #[derive(Clone)]
 pub struct AiManager {
@@ -275,13 +245,13 @@ impl AiManager {
             }
 
             // Stage 11: Auto Self-Healing on Startup (Restore degraded components after a crash)
-            if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
-                if super::self_heal::has_crash_marker(app) {
+            if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
+                if crate::modules::self_heal::has_crash_marker(app) {
                     log::warn!("Previous session crashed! Auto-healing degraded components...");
                     for comp in &["graph", "sessions", "providers", "chain", "ai", "project_intel"] {
                         let _ = heal.heal_component(comp);
                     }
-                    super::self_heal::clear_crash_marker(app);
+                    crate::modules::self_heal::clear_crash_marker(app);
                 }
             }
         }
@@ -292,10 +262,10 @@ impl AiManager {
         // Warm ripgrep scan cache if workspace root is set
         let root = self.workspace_root.lock().unwrap().clone();
         if !root.is_empty() && std::path::Path::new(&root).exists() {
-            let _ = super::ripgrep::search_text("fn", std::path::Path::new(&root), Some(5));
+            let _ = crate::modules::execution::ripgrep::search_text("fn", std::path::Path::new(&root), Some(5));
         }
         // Report healthy to self-heal engine
-        if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+        if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
             heal.report_healthy("ai");
         }
         log::info!("Cache warmed for workspace: {}", root);
@@ -1694,8 +1664,8 @@ async fn run_react_loop(
 /// If no provider agent is found for the target provider, falls back to default_base_url
 /// and keeps the baseline agent's id for keychain lookup.
 pub fn resolve_routed_agent(
-    decision: &super::routing_engine::RouteDecision,
-    registry: &super::model_registry::ModelRegistry,
+    decision: &crate::modules::routing::routing_engine::RouteDecision,
+    registry: &crate::modules::routing::model_registry::ModelRegistry,
     state: &AiManager,
     baseline_agent: &AgentConfig,
 ) -> AgentConfig {
@@ -1749,7 +1719,7 @@ pub fn resolve_routed_agent(
 }
 
 pub fn resolve_fallback_agent(
-    next_fallback: &super::fallback_manager::FallbackEntry,
+    next_fallback: &crate::modules::routing::fallback_manager::FallbackEntry,
     state: &AiManager,
     current_agent: &AgentConfig,
 ) -> AgentConfig {
@@ -1768,33 +1738,7 @@ pub fn resolve_fallback_agent(
     agent
 }
 
-/// Score a model name by rough capability for fallback ordering.
-/// Higher = try later (prefer cheaper/faster alternatives first, escalate on failure).
-/// This gives a reasonable ordering: nano < mini < flash < default < plus < medium < large < pro < ultra/opus
-fn model_capability_score(model: &str) -> i32 {
-    let m = model.to_lowercase();
-    // Tier 1: premium reasoning
-    if m.contains("ultra") || m.contains("opus") { return 100; }
-    // Tier 2: pro / large / max
-    if m.contains("-pro") || m.contains("_pro") || m.ends_with("pro")
-        || m.contains("large") || m.contains("-max") || m.contains("r1") { return 80; }
-    // Tier 3: medium / plus / sonnet / 70b
-    if m.contains("plus") || m.contains("medium") || m.contains("sonnet")
-        || m.contains("70b") || m.contains("72b") { return 60; }
-    // Tier 4: flash / mini / standard
-    if m.contains("flash") || m.contains("-mini") || m.contains("_mini")
-        || m.contains("8b") || m.contains("7b") { return 40; }
-    // Tier 5: nano / tiny / lite
-    if m.contains("nano") || m.contains("tiny") || m.contains("lite") { return 20; }
-    // Try to extract a version number for relative ordering
-    // e.g. "gemini-2.5" > "gemini-2.0" > "gemini-1.5"
-    let version_score = m
-        .split(|c: char| !c.is_ascii_digit() && c != '.')
-        .filter_map(|s| s.parse::<f32>().ok())
-        .fold(0.0f32, f32::max);
-    if version_score > 0.0 { return (version_score * 10.0) as i32; }
-    50 // unknown â€” middle of the pack
-}
+
 
 /// Handles Gemini's "Please retry in 10.3s" and the JSON "retryDelay": "10s" patterns.
 fn extract_retry_delay_secs(error_body: &str) -> Option<u64> {
@@ -1843,14 +1787,25 @@ pub async fn ai_chat_stream(
 
     // Auto Mode Routing Integration
     let is_auto_mode = agent.model == "auto" || model_override.as_deref() == Some("auto");
-    let mut registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    let mut registry = crate::modules::routing::model_registry::ModelRegistry::load(None::<&std::path::Path>);
     if is_auto_mode {
         let active_agents = state.list_agents();
-        let active_providers: Vec<String> = active_agents.iter().map(|a| a.provider.clone()).collect();
-        registry.models.retain(|m| active_providers.contains(&m.provider));
+        let configured_providers: Vec<String> = active_agents.iter()
+            .filter(|a| {
+                if a.provider == "ollama" {
+                    return true;
+                }
+                let key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &a.id)
+                    .ok().flatten()
+                    .or_else(|| a.api_key.clone());
+                key.map(|k| !k.is_empty() && k != "********").unwrap_or(false)
+            })
+            .map(|a| a.provider.clone())
+            .collect();
+        registry.models.retain(|m| configured_providers.contains(&m.provider));
     }
-    let tools = super::tool_registry::ToolRegistry::load_default();
-    let engine = super::routing_engine::RoutingEngine::new(registry.clone(), tools);
+    let tools = crate::modules::execution::tool_registry::ToolRegistry::load_default();
+    let engine = crate::modules::routing::routing_engine::RoutingEngine::new(registry.clone(), tools);
     let routing_decision = if is_auto_mode {
         use tauri::Manager;
         let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
@@ -1884,16 +1839,16 @@ pub async fn ai_chat_stream(
 
     // Build fallback manager for auto mode
     let mut fallback_mgr = routing_decision.as_ref().map(|decision| {
-        super::fallback_manager::FallbackManager::from_registry(
+        crate::modules::routing::fallback_manager::FallbackManager::from_registry(
             &registry,
             decision.reasoning_tier.clone(),
             match decision.intent {
-                super::routing_engine::Intent::ExplainSimple | super::routing_engine::Intent::ArchDesign => super::model_registry::Spec::Chat,
-                super::routing_engine::Intent::CodeWrite | super::routing_engine::Intent::RefactorFull => super::model_registry::Spec::Code,
-                super::routing_engine::Intent::CodeReview => super::model_registry::Spec::Review,
-                super::routing_engine::Intent::TestGenerate => super::model_registry::Spec::Test,
-                super::routing_engine::Intent::ScanOnly | super::routing_engine::Intent::SymbolLookup | super::routing_engine::Intent::DebugLogic => super::model_registry::Spec::Scan,
-                super::routing_engine::Intent::ExternalAgent => super::model_registry::Spec::Code,
+                crate::modules::routing::routing_engine::Intent::ExplainSimple | crate::modules::routing::routing_engine::Intent::ArchDesign => crate::modules::routing::model_registry::Spec::Chat,
+                crate::modules::routing::routing_engine::Intent::CodeWrite | crate::modules::routing::routing_engine::Intent::RefactorFull => crate::modules::routing::model_registry::Spec::Code,
+                crate::modules::routing::routing_engine::Intent::CodeReview => crate::modules::routing::model_registry::Spec::Review,
+                crate::modules::routing::routing_engine::Intent::TestGenerate => crate::modules::routing::model_registry::Spec::Test,
+                crate::modules::routing::routing_engine::Intent::ScanOnly | crate::modules::routing::routing_engine::Intent::SymbolLookup | crate::modules::routing::routing_engine::Intent::DebugLogic => crate::modules::routing::model_registry::Spec::Scan,
+                crate::modules::routing::routing_engine::Intent::ExternalAgent => crate::modules::routing::model_registry::Spec::Code,
             },
             decision.token_count,
         )
@@ -1913,21 +1868,21 @@ pub async fn ai_chat_stream(
     // Tool-only route: execute tool directly, skip model call
     if let Some(ref decision) = routing_decision {
         if let Some(tool_id) = &decision.tool_route {
-            if matches!(decision.output_type, super::routing_engine::OutputType::ToolOutput) {
+            if matches!(decision.output_type, crate::modules::routing::routing_engine::OutputType::ToolOutput) {
                 let result = match tool_id {
-                    super::tool_registry::ToolId::Ripgrep => {
+                    crate::modules::execution::tool_registry::ToolId::Ripgrep => {
                         let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
                         let root = workspace_root.as_deref().unwrap_or(".");
-                        super::ripgrep::search_text(last_message, std::path::Path::new(root), Some(50))
+                        crate::modules::execution::ripgrep::search_text(last_message, std::path::Path::new(root), Some(50))
                     }
-                    super::tool_registry::ToolId::TreeSitter => {
+                    crate::modules::execution::tool_registry::ToolId::TreeSitter => {
                         let last_message = messages.last().map(|m| m.content.as_str()).unwrap_or("");
                         let q = last_message.trim();
                         if let Ok(nodes) = graph_state.search(q) {
                             if nodes.is_empty() {
                                 // Try ripgrep as fallback for text search
                                 let root = workspace_root.as_deref().unwrap_or(".");
-                                super::ripgrep::search_text(q, std::path::Path::new(root), Some(30))
+                                crate::modules::execution::ripgrep::search_text(q, std::path::Path::new(root), Some(30))
                             } else {
                                 let mut out = String::new();
                                 for n in &nodes {
@@ -1968,7 +1923,7 @@ pub async fn ai_chat_stream(
 
     // External Agent route: delegate to CLI agent (claude, gemini, opencode, aider, codex, agy)
     if let Some(ref decision) = routing_decision {
-        if decision.intent == super::routing_engine::Intent::ExternalAgent {
+        if decision.intent == crate::modules::routing::routing_engine::Intent::ExternalAgent {
             if let Some(agent_name) = &decision.external_agent {
                 let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
                 let _ = app.emit("ai:route_progress", format!("[Auto Mode] Delegating heavy task to external CLI agent: {}", agent_name));
@@ -1994,16 +1949,16 @@ pub async fn ai_chat_stream(
                             &format!("EXTERNAL AGENT {}: returned {} chars", agent_name, output.len()));
                         // Stage 7: Auto Code Review on generated content
                         let mut final_content = output.clone();
-                        if let Some(review_state) = app.try_state::<super::review::ReviewState>() {
+                        if let Some(review_state) = app.try_state::<crate::modules::analysis::review::ReviewState>() {
                             if let Ok(engine) = review_state.engine.lock() {
                                 let review_res = engine.review_text(&output);
                                 if review_res.total > 0 {
                                     final_content.push_str("\n\n---\n### 🔍 Auto Code Review\n");
                                     for f in review_res.findings {
                                         let sev_icon = match f.severity {
-                                            super::review::ReviewSeverity::Error => "🔴 Error",
-                                            super::review::ReviewSeverity::Warning => "⚠️ Warning",
-                                            super::review::ReviewSeverity::Info => "ℹ️ Info",
+                                            crate::modules::analysis::review::ReviewSeverity::Error => "🔴 Error",
+                                            crate::modules::analysis::review::ReviewSeverity::Warning => "⚠️ Warning",
+                                            crate::modules::analysis::review::ReviewSeverity::Info => "ℹ️ Info",
                                         };
                                         final_content.push_str(&format!(
                                             "- **{}** ({}): {} [line {}]\n  *Suggestion:* {}\n",
@@ -2037,7 +1992,8 @@ pub async fn ai_chat_stream(
     // Otomatis delegasikan ke orchestrator untuk tugas kompleks (RefactorFull, CodeReview, ArchDesign)
     // atau jika kompleksitas (jumlah file/langkah) melebihi batas threshold yang dapat dikonfigurasi
     if let Some(ref decision) = routing_decision {
-        let prompt = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
+        let prompt_raw = messages.last().map(|m| m.content.as_str()).unwrap_or("").to_string();
+        let prompt = crate::modules::routing::routing_engine::strip_injected_context(&prompt_raw);
         let root_str = workspace_root.as_deref().unwrap_or("");
         let config = load_style_coding_config(root_str);
         let multi_agent_steps_thresh = config.as_ref().and_then(|c| c.multi_agent_steps_threshold).unwrap_or(3);
@@ -2070,9 +2026,9 @@ pub async fn ai_chat_stream(
         };
 
         let is_complex_intent = matches!(decision.intent, 
-            super::routing_engine::Intent::RefactorFull | 
-            super::routing_engine::Intent::CodeReview |
-            super::routing_engine::Intent::ArchDesign
+            crate::modules::routing::routing_engine::Intent::RefactorFull | 
+            crate::modules::routing::routing_engine::Intent::CodeReview |
+            crate::modules::routing::routing_engine::Intent::ArchDesign
         );
 
         let should_delegate = is_complex_intent || plan_steps > multi_agent_steps_thresh || affected_files > multi_agent_files_thresh;
@@ -2080,9 +2036,9 @@ pub async fn ai_chat_stream(
         if should_delegate {
             use tauri::Manager;
             let role = match decision.intent {
-                super::routing_engine::Intent::CodeReview => super::agent_orch::SubAgentRole::CodeReviewer,
-                super::routing_engine::Intent::RefactorFull => super::agent_orch::SubAgentRole::Refactorer,
-                super::routing_engine::Intent::ArchDesign => super::agent_orch::SubAgentRole::Architect,
+                crate::modules::routing::routing_engine::Intent::CodeReview => super::agent_orch::SubAgentRole::CodeReviewer,
+                crate::modules::routing::routing_engine::Intent::RefactorFull => super::agent_orch::SubAgentRole::Refactorer,
+                crate::modules::routing::routing_engine::Intent::ArchDesign => super::agent_orch::SubAgentRole::Architect,
                 _ => super::agent_orch::SubAgentRole::Refactorer, // Default to Refactorer for large complex tasks
             };
             
@@ -2171,6 +2127,16 @@ pub async fn ai_chat_stream(
     // where fallback_mgr is None). Ensures 429/quota errors always try other providers.
     let mut universal_fallback: Vec<AgentConfig> = {
         let mut all = state.list_agents();
+        // Filter out agents without API keys (except ollama)
+        all.retain(|a| {
+            if a.provider == "ollama" {
+                return true;
+            }
+            let key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &a.id)
+                .ok().flatten()
+                .or_else(|| a.api_key.clone());
+            key.map(|k| !k.is_empty() && k != "********").unwrap_or(false)
+        });
         // Put the initially-selected agent's provider last so we try different providers first
         all.sort_by(|a, b| {
             let a_same = a.provider == agent.provider;
@@ -2217,7 +2183,7 @@ pub async fn ai_chat_stream(
         // Context compression: summarize if too many messages.
         // NOTE: ContextManager is stateless for compression â€” summaries per invocation only,
         // not accumulated across sessions (avoids cross-session bleed from static singleton).
-        let ctx_mgr = super::context::ContextManager::new();
+        let ctx_mgr = crate::modules::session::context::ContextManager::new();
         let (compressed_msgs, summary) = ctx_mgr.compress(&messages);
         if summary.is_some() {
             state.write_agent_log(&agent.id, &agent.name, "CONTEXT COMPRESSED: summarized older messages");
@@ -2240,11 +2206,11 @@ pub async fn ai_chat_stream(
                 let (price_in, price_out) = model_price(&agent.model);
                 let cost = (input_tokens as f64 * price_in + output_tokens as f64 * price_out) / 1000.0;
                 state.record_usage(&agent.id, input_tokens, output_tokens, cost);
-                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                     ps.record_success(&agent.provider, input_tokens + output_tokens, cost, 0);
                 }
                 // Stage 14: Cost routing â€” record usage and check budget
-                if let Some(cost_router) = app.try_state::<super::cost_routing::CostRouter>() {
+                if let Some(cost_router) = app.try_state::<crate::modules::session::cost_routing::CostRouter>() {
                     cost_router.record_usage(&agent.id, &agent.model, &agent.provider, input_tokens, output_tokens, cost);
                     if !cost_router.within_budget() {
                         let _ = app.emit("ai:budget_warning", serde_json::json!({
@@ -2259,16 +2225,16 @@ pub async fn ai_chat_stream(
 
                 // Stage 7: Auto Code Review on generated content containing code blocks
                 let mut final_content = content.clone();
-                if let Some(review_state) = app.try_state::<super::review::ReviewState>() {
+                if let Some(review_state) = app.try_state::<crate::modules::analysis::review::ReviewState>() {
                     if let Ok(engine) = review_state.engine.lock() {
                         let review_res = engine.review_text(&content);
                         if review_res.total > 0 {
                             final_content.push_str("\n\n---\n### 🔍 Auto Code Review\n");
                             for f in review_res.findings {
                                 let sev_icon = match f.severity {
-                                    super::review::ReviewSeverity::Error => "🔴 Error",
-                                    super::review::ReviewSeverity::Warning => "⚠️ Warning",
-                                    super::review::ReviewSeverity::Info => "ℹ️ Info",
+                                    crate::modules::analysis::review::ReviewSeverity::Error => "🔴 Error",
+                                    crate::modules::analysis::review::ReviewSeverity::Warning => "⚠️ Warning",
+                                    crate::modules::analysis::review::ReviewSeverity::Info => "ℹ️ Info",
                                 };
                                 final_content.push_str(&format!(
                                     "- **{}** ({}): {} [line {}]\n  *Suggestion:* {}\n",
@@ -2290,18 +2256,24 @@ pub async fn ai_chat_stream(
                 return Ok(());
             }
             Err(e) => {
-                if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                     ps.record_failure(&agent.provider, &e);
                 }
-                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
                     heal.report_degraded("providers", &format!("{} failed: {}", agent.provider, e));
                 }
                 state.write_agent_log(&agent.id, &agent.name, &format!("ERROR {}", e));
-                let _ = app.emit("ai:error", AiStreamError { error: e.clone() });
 
                 // Detect rate-limit / quota errors and extract retry delay for user feedback
                 let is_rate_limit = e.contains("429") || e.contains("RESOURCE_EXHAUSTED")
                     || e.contains("quota") || e.contains("rate_limit") || e.contains("rate limit");
+
+                let is_quota_exhausted = e.contains("quota") || e.contains("RESOURCE_EXHAUSTED") || e.contains("billing") || e.contains("Quota exceeded") || e.contains("exceeded your current quota");
+                if is_quota_exhausted {
+                    // Quota exhausted means trying other models on the same provider will also fail.
+                    // Clear intra_model_fallback so we immediately escalate to other providers.
+                    intra_model_fallback.clear();
+                }
                 let retry_delay = if is_rate_limit { extract_retry_delay_secs(&e) } else { None };
                 let fail_label = if is_rate_limit {
                     format!("Rate limit/quota on {}/{}{}",
@@ -2334,7 +2306,7 @@ pub async fn ai_chat_stream(
                         if !fm.advance() { break; }
                         let Some(next) = fm.current() else { break; };
                         // Skip providers whose circuit is open
-                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                        if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                             if !ps.is_available(&next.provider) {
                                 state.write_agent_log(&agent.id, &agent.name,
                                     &format!("SKIP {} (circuit open)", next.provider));
@@ -2361,7 +2333,7 @@ pub async fn ai_chat_stream(
                         universal_fallback_idx += 1;
 
                         // Skip if circuit breaker is open for this provider
-                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                        if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                             if !ps.is_available(&next_agent.provider) {
                                 state.write_agent_log(&agent.id, &agent.name,
                                     &format!("UNIVERSAL_SKIP {} (circuit open)", next_agent.provider));
@@ -2407,7 +2379,7 @@ pub async fn ai_chat_stream(
                 }
 
                 // â”€â”€ All fallbacks exhausted â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
                     heal.report_down("providers", &format!("all fallbacks exhausted: {}", e));
                 }
                 let _ = app.emit("ai:error", AiStreamError {
@@ -2572,118 +2544,6 @@ pub struct ProviderModel {
     pub source: String,
 }
 
-const PROVIDER_ENDPOINTS: &[(&str, &str)] = &[
-    ("openai", "https://api.openai.com/v1"),
-    ("cerebras", "https://api.cerebras.ai/v1"),
-    ("mistral", "https://api.mistral.ai/v1"),
-    ("alibaba", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-    ("xai", "https://api.x.ai/v1"),
-    ("openrouter", "https://openrouter.ai/api/v1"),
-    ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai"),
-];
-
-fn provider_endpoint(provider: &str) -> Option<&'static str> {
-    PROVIDER_ENDPOINTS.iter().find(|(p, _)| *p == provider).map(|(_, url)| *url)
-}
-
-async fn fetch_models_json(url: &str, api_key: &Option<String>) -> Result<(reqwest::StatusCode, String), String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req = client.get(url);
-    if let Some(ref key) = api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-    let resp = req.send().await.map_err(|e| format!("HTTP error: {e}"))?;
-    let status = resp.status();
-    let body_text = resp.text().await.map_err(|e| format!("Read error: {e}"))?;
-    Ok((status, body_text))
-}
-
-async fn fetch_openai_models(url: &str, api_key: &Option<String>) -> Result<Vec<ProviderModel>, String> {
-    let models_url = format!("{}/models", url.trim_end_matches('/'));
-    let (status, body_text) = fetch_models_json(&models_url, api_key).await?;
-    let body: Value = serde_json::from_str(&body_text)
-        .map_err(|e| format!("Parse error: {e}\nResponse body:\n{body_text}"))?;
-    if !status.is_success() {
-        let err_msg = body["error"]["message"].as_str().unwrap_or("unknown error");
-        return Err(format!("API error ({}): {err_msg}", status.as_u16()));
-    }
-    let arr = body["data"].as_array()
-        .ok_or_else(|| format!("No 'data' array in response.\nResponse body:\n{body_text}"))?;
-    let list = arr.iter().filter_map(|m| {
-        let id = m["id"].as_str()?.to_string();
-        Some(ProviderModel { id, name: None, source: "openai".to_string() })
-    }).collect();
-    Ok(list)
-}
-
-async fn fetch_gemini_models(api_key: &Option<String>) -> Result<Vec<ProviderModel>, String> {
-    let key = api_key.as_ref().ok_or("API key required for Gemini")?;
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}");
-    let (status, body_text) = fetch_models_json(&url, &None).await?;
-    let body: Value = serde_json::from_str(&body_text)
-        .map_err(|e| format!("Parse error: {e}\nResponse body:\n{body_text}"))?;
-    if !status.is_success() {
-        let err_msg = body["error"]["message"].as_str().unwrap_or("unknown error");
-        return Err(format!("Gemini API error ({}): {err_msg}", status.as_u16()));
-    }
-    let arr = body["models"].as_array()
-        .ok_or_else(|| format!("No 'models' array in Gemini response.\nResponse body:\n{body_text}"))?;
-    let list = arr.iter().filter_map(|m| {
-        let name = m["name"].as_str()?;
-        let id = name.split('/').last().unwrap_or(name);
-        Some(ProviderModel { id: id.to_string(), name: None, source: "gemini".to_string() })
-    }).collect();
-    Ok(list)
-}
-
-async fn fetch_openrouter_models(api_key: &Option<String>) -> Result<Vec<ProviderModel>, String> {
-    let key = api_key.as_ref().ok_or("API key required for OpenRouter")?;
-    let (status, body_text) = fetch_models_json("https://openrouter.ai/api/v1/models", &Some(key.clone())).await?;
-    let body: Value = serde_json::from_str(&body_text)
-        .map_err(|e| format!("Parse error: {e}\nResponse body:\n{body_text}"))?;
-    if !status.is_success() {
-        let err_msg = body["error"]["message"].as_str().unwrap_or("unknown error");
-        return Err(format!("OpenRouter error ({}): {err_msg}", status.as_u16()));
-    }
-    let arr = body["data"].as_array()
-        .ok_or_else(|| format!("No 'data' array.\nResponse body:\n{body_text}"))?;
-    let list = arr.iter().filter_map(|m| {
-        let id = m["id"].as_str()?.to_string();
-        let name = m["name"].as_str().map(|s| s.to_string());
-        Some(ProviderModel { id, name, source: "openrouter".to_string() })
-    }).collect();
-    Ok(list)
-}
-
-fn vercel_models() -> Vec<ProviderModel> {
-    vec![
-        ProviderModel { id: "openai/gpt-4o".into(), name: Some("GPT-4o (OpenAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "openai/gpt-4o-mini".into(), name: Some("GPT-4o Mini (OpenAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "openai/gpt-4-turbo".into(), name: Some("GPT-4 Turbo (OpenAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "openai/gpt-3.5-turbo".into(), name: Some("GPT-3.5 Turbo (OpenAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "openai/o3-mini".into(), name: Some("o3 Mini (OpenAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "anthropic/claude-sonnet-4-20250514".into(), name: Some("Claude Sonnet 4 (Anthropic)".into()), source: "vercel".into() },
-        ProviderModel { id: "anthropic/claude-3-5-sonnet-latest".into(), name: Some("Claude 3.5 Sonnet (Anthropic)".into()), source: "vercel".into() },
-        ProviderModel { id: "anthropic/claude-3-5-haiku-latest".into(), name: Some("Claude 3.5 Haiku (Anthropic)".into()), source: "vercel".into() },
-        ProviderModel { id: "anthropic/claude-opus-4-20250514".into(), name: Some("Claude Opus 4 (Anthropic)".into()), source: "vercel".into() },
-        ProviderModel { id: "google/gemini-2.0-flash".into(), name: Some("Gemini 2.0 Flash (Google)".into()), source: "vercel".into() },
-        ProviderModel { id: "google/gemini-2.0-flash-lite".into(), name: Some("Gemini 2.0 Flash Lite (Google)".into()), source: "vercel".into() },
-        ProviderModel { id: "google/gemini-2.5-pro".into(), name: Some("Gemini 2.5 Pro (Google)".into()), source: "vercel".into() },
-        ProviderModel { id: "google/gemini-1.5-pro".into(), name: Some("Gemini 1.5 Pro (Google)".into()), source: "vercel".into() },
-        ProviderModel { id: "google/gemini-1.5-flash".into(), name: Some("Gemini 1.5 Flash (Google)".into()), source: "vercel".into() },
-        ProviderModel { id: "deepseek/deepseek-chat".into(), name: Some("DeepSeek Chat (DeepSeek)".into()), source: "vercel".into() },
-        ProviderModel { id: "deepseek/deepseek-reasoner".into(), name: Some("DeepSeek Reasoner (DeepSeek)".into()), source: "vercel".into() },
-        ProviderModel { id: "cerebras/llama3.1-8b".into(), name: Some("Llama 3.1 8B (Cerebras)".into()), source: "vercel".into() },
-        ProviderModel { id: "cerebras/llama3.1-70b".into(), name: Some("Llama 3.1 70B (Cerebras)".into()), source: "vercel".into() },
-        ProviderModel { id: "mistral/mistral-large-latest".into(), name: Some("Mistral Large (Mistral)".into()), source: "vercel".into() },
-        ProviderModel { id: "xai/grok-2".into(), name: Some("Grok 2 (xAI)".into()), source: "vercel".into() },
-        ProviderModel { id: "perplexity/sonar-pro".into(), name: Some("Sonar Pro (Perplexity)".into()), source: "vercel".into() },
-    ]
-}
-
 #[tauri::command]
 pub async fn ai_list_models(
     api_key: Option<String>,
@@ -2695,15 +2555,12 @@ pub async fn ai_list_models(
         "gemini" => fetch_gemini_models(&api_key).await,
         "openrouter" => fetch_openrouter_models(&api_key).await,
         _ => {
-            // User-provided base_url always takes priority over hardcoded endpoints.
-            // This allows private/custom deployments (e.g. Alibaba private MaaS) to work correctly.
             if let Some(ref user_url) = base_url {
                 let url = user_url.trim();
                 if !url.is_empty() {
                     return fetch_openai_models(url, &api_key).await;
                 }
             }
-            // Fall back to hardcoded preset URL for the provider.
             if let Some(endpoint) = provider_endpoint(&provider) {
                 fetch_openai_models(endpoint, &api_key).await
             } else {
@@ -2716,9 +2573,6 @@ pub async fn ai_list_models(
     }
 }
 
-/// Fetch models for a saved agent using its stored credentials, then cache the result.
-/// Call this once after creating/updating an agent. Subsequently, cached_models is used
-/// so no repeated network calls are needed.
 #[tauri::command]
 pub async fn ai_sync_agent_models(
     app: tauri::AppHandle,
@@ -2728,12 +2582,10 @@ pub async fn ai_sync_agent_models(
 ) -> Result<Vec<String>, String> {
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
 
-    // Load real API key from keychain
     if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
         agent.api_key = Some(real_key);
     }
 
-    // Resolve the endpoint: prefer agent's base_url, fall back to known preset
     let base_url_str: String = if let Some(ref url) = agent.base_url {
         let trimmed = url.trim().to_string();
         if !trimmed.is_empty() { trimmed } else { String::new() }
@@ -2761,7 +2613,6 @@ pub async fn ai_sync_agent_models(
 
     let model_ids: Vec<String> = models.into_iter().map(|m| m.id).collect();
 
-    // Store cache back into the agent config and persist to disk
     {
         let mut agents = state.agents.lock().unwrap();
         if let Some(a) = agents.get_mut(&agent_id) {
@@ -2777,7 +2628,7 @@ pub async fn ai_sync_agent_models(
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ProbeResult {
     pub id: String,
-    pub status: String, // "ok" | "auth_error" | "quota_error" | "model_error" | "timeout" | "error"
+    pub status: String,
     pub latency_ms: u64,
     pub error_hint: Option<String>,
 }
@@ -2787,160 +2638,6 @@ pub struct ProbeProgress {
     pub total: usize,
     pub done: usize,
     pub current_model: String,
-}
-
-async fn probe_single_model(
-    model_id: String,
-    api_key: Option<String>,
-    base_url: Option<String>,
-    provider: String,
-) -> ProbeResult {
-    let start = std::time::Instant::now();
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build();
-    
-    let client = match client {
-        Ok(c) => c,
-        Err(e) => return ProbeResult {
-            id: model_id,
-            status: "error".to_string(),
-            latency_ms: 0,
-            error_hint: Some(e.to_string()),
-        }
-    };
-
-    let is_gemini_native = provider == "gemini" && base_url.as_ref().map_or(true, |url| url.trim().is_empty() || !url.starts_with("http"));
-
-    let res = if is_gemini_native {
-        let key = match &api_key {
-            Some(k) => k,
-            None => return ProbeResult {
-                id: model_id,
-                status: "auth_error".to_string(),
-                latency_ms: 0,
-                error_hint: Some("API Key is required for Gemini native".to_string()),
-            }
-        };
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}", model_id, key);
-        let body = serde_json::json!({
-            "contents": [{"parts": [{"text": "Reply with: OK"}]}],
-            "generationConfig": {"maxOutputTokens": 5}
-        });
-        client.post(&url).json(&body).send().await
-    } else {
-        let resolved_url = if let Some(ref url) = base_url {
-            let trimmed = url.trim();
-            if !trimmed.is_empty() {
-                trimmed.to_string()
-            } else {
-                default_base_url(&provider).to_string()
-            }
-        } else {
-            default_base_url(&provider).to_string()
-        };
-
-        if resolved_url.is_empty() {
-            return ProbeResult {
-                id: model_id,
-                status: "error".to_string(),
-                latency_ms: 0,
-                error_hint: Some(format!("No endpoint URL configured for provider '{}'", provider)),
-            };
-        }
-
-        let url = format!("{}/chat/completions", resolved_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": model_id,
-            "messages": [{"role": "user", "content": "Reply with: OK"}],
-            "max_tokens": 15,
-            "temperature": 0.5,
-        });
-
-        let mut req = client.post(&url).json(&body);
-        if let Some(ref key) = api_key {
-            if !key.is_empty() {
-                req = req.header("Authorization", format!("Bearer {}", key));
-            }
-        }
-        req.send().await
-    };
-
-    let latency = start.elapsed().as_millis() as u64;
-
-    match res {
-        Ok(resp) => {
-            let status_code = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            
-            if status_code.is_success() {
-                let body_lower = body_text.to_lowercase();
-                if body_lower.contains("insufficient_quota") || body_lower.contains("insufficient balance") || body_lower.contains("exceeded your current quota") {
-                    ProbeResult {
-                        id: model_id,
-                        status: "quota_error".to_string(),
-                        latency_ms: latency,
-                        error_hint: Some("Quota exceeded or insufficient balance".to_string()),
-                    }
-                } else if body_lower.contains("invalid api key") || body_lower.contains("incorrect api key") || body_lower.contains("invalid_api_key") {
-                    ProbeResult {
-                        id: model_id,
-                        status: "auth_error".to_string(),
-                        latency_ms: latency,
-                        error_hint: Some("Invalid API Key".to_string()),
-                    }
-                } else {
-                    ProbeResult {
-                        id: model_id,
-                        status: "ok".to_string(),
-                        latency_ms: latency,
-                        error_hint: None,
-                    }
-                }
-            } else {
-                let status_val = status_code.as_u16();
-                let hint = if !body_text.is_empty() {
-                    if let Ok(json_body) = serde_json::from_str::<Value>(&body_text) {
-                        if let Some(msg) = json_body["error"]["message"].as_str() {
-                            msg.to_string()
-                        } else if let Some(msg) = json_body["error"].as_str() {
-                            msg.to_string()
-                        } else {
-                            body_text
-                        }
-                    } else {
-                        body_text
-                    }
-                } else {
-                    format!("HTTP {}", status_val)
-                };
-
-                let status_str = match status_val {
-                    401 | 403 => "auth_error",
-                    429 => "quota_error",
-                    404 => "model_error",
-                    _ => "error",
-                };
-
-                ProbeResult {
-                    id: model_id,
-                    status: status_str.to_string(),
-                    latency_ms: latency,
-                    error_hint: Some(hint),
-                }
-            }
-        }
-        Err(e) => {
-            let error_str = e.to_string();
-            let is_timeout = e.is_timeout() || error_str.contains("timeout") || error_str.contains("timed out");
-            ProbeResult {
-                id: model_id,
-                status: if is_timeout { "timeout".to_string() } else { "error".to_string() },
-                latency_ms: latency,
-                error_hint: Some(error_str),
-            }
-        }
-    }
 }
 
 #[tauri::command]
@@ -3012,15 +2709,15 @@ pub fn ai_classify_request(
     text: String,
     frontend_tier: String,
 ) -> ClassifyResult {
-    let registry = super::model_registry::ModelRegistry::load(None::<&std::path::Path>);
-    let tools = super::tool_registry::ToolRegistry::load_default();
-    let engine = super::routing_engine::RoutingEngine::new(registry, tools);
+    let registry = crate::modules::routing::model_registry::ModelRegistry::load(None::<&std::path::Path>);
+    let tools = crate::modules::execution::tool_registry::ToolRegistry::load_default();
+    let engine = crate::modules::routing::routing_engine::RoutingEngine::new(registry, tools);
     
     let decision = engine.route_request(&text);
     let tier = match decision.context_size {
-        super::routing_engine::ContextSize::Small => "simple",
-        super::routing_engine::ContextSize::Medium => "medium",
-        super::routing_engine::ContextSize::Large | super::routing_engine::ContextSize::Massive => "complex",
+        crate::modules::routing::routing_engine::ContextSize::Small => "simple",
+        crate::modules::routing::routing_engine::ContextSize::Medium => "medium",
+        crate::modules::routing::routing_engine::ContextSize::Large | crate::modules::routing::routing_engine::ContextSize::Massive => "complex",
     };
     
     let overrode_frontend = tier != frontend_tier;
@@ -3043,7 +2740,7 @@ async fn run_chain(
     _original_agent: &AgentConfig,
     messages: &[ChatMessage],
     plan: &super::chain_engine::ChainPlan,
-    registry: &super::model_registry::ModelRegistry,
+    registry: &crate::modules::routing::model_registry::ModelRegistry,
     graph_state: &super::graph::GraphState,
     workspace_root: Option<&str>,
     is_private: bool,
@@ -3140,7 +2837,7 @@ async fn run_chain(
             }
             Err(e) => {
                 let msg = format!("{} failed: {}", step_label, e);
-                if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
                     heal.report_degraded("chain", &format!("step {}: {}", node.id, e));
                 }
                 state.write_agent_log(&step_agent.id, &step_agent.name, &format!("CHAIN ERROR {}", msg));
@@ -3177,7 +2874,7 @@ async fn run_dag(
     _original_agent: &AgentConfig,
     messages: &[ChatMessage],
     plan: &super::chain_engine::DagPlan,
-    registry: &super::model_registry::ModelRegistry,
+    registry: &crate::modules::routing::model_registry::ModelRegistry,
     graph_state: &super::graph::GraphState,
     workspace_root: Option<&str>,
     is_private: bool,
@@ -3312,7 +3009,7 @@ async fn run_dag(
                         let (price_in, price_out) = model_price(&step_agent.model);
                         let step_cost = (inp as f64 * price_in + out as f64 * price_out) / 1000.0;
                         state_clone.record_usage(&step_agent.id, inp, out, step_cost);
-                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                        if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                             ps.record_success(&step_agent.provider, inp + out, step_cost, 0);
                         }
                         (node.id.clone(), super::chain_engine::DagStepResult {
@@ -3322,11 +3019,11 @@ async fn run_dag(
                     }
                     Err(e) => {
                         let err_msg = format!("{} failed: {}", step_label, e);
-                        if let Some(heal) = app.try_state::<super::self_heal::SelfHealEngine>() {
+                        if let Some(heal) = app.try_state::<crate::modules::self_heal::SelfHealEngine>() {
                             heal.report_degraded("chain", &format!("dag node {}: {}", node.id, e));
                         }
                         state_clone.write_agent_log(&step_agent.id, &step_agent.name, &format!("DAG ERROR {}", err_msg));
-                        if let Some(ps) = app.try_state::<super::provider_stats::ProviderStats>() {
+                        if let Some(ps) = app.try_state::<crate::modules::routing::provider_stats::ProviderStats>() {
                             ps.record_failure(&step_agent.provider, &err_msg);
                         }
                         (node.id.clone(), super::chain_engine::DagStepResult {

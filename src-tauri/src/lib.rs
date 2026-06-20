@@ -1,46 +1,16 @@
 mod modules;
+mod app;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::sync::{Arc, Mutex};
-use modules::{agent_orch, ai, cli, cost_routing, db, fs, graph, pio, project_intel, provider_stats, proxy, pty, review, secrets, self_heal, sessions, ssh};
-use tauri::Manager;
+use modules::{agent_orch, ai, analysis, cli, db, fs, graph, pio, project_intel, proxy, pty, routing, secrets, self_heal, session, ssh};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::init();
 
-    let proxy_state = Arc::new(Mutex::new(proxy::ProxyState::new(Arc::new(Mutex::new(Vec::new())))));
-    proxy::start_proxy(&proxy_state);
-
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_http::init())
-        .manage(pty::PtyManager::new())
-        .manage(ai::AiManager::new())
-        .manage(sessions::SessionsState::new())
-        .manage(secrets::SecretsState::default())
-        .manage(ssh::SshManager::new())
-        .manage(db::DbManager::new())
-        .manage(graph::GraphState::new())
-        .manage(project_intel::ProjectIntelState::new())
-        .manage(review::ReviewState::new())
-        .manage(provider_stats::ProviderStats::new())
-        .manage(agent_orch::AgentOrchestrator::new())
-        .manage(self_heal::SelfHealEngine::new())
-        .manage(cost_routing::CostRouter::new())
-        .manage(proxy_state)
-        .setup(|app| {
-            let handle = app.handle();
-            let sessions_state: tauri::State<'_, sessions::SessionsState> = handle.state();
-            sessions_state.init(handle);
-            Ok(())
-        })
+    app::configure_app(tauri::Builder::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_open,
             pty::pty_write,
@@ -71,11 +41,11 @@ pub fn run() {
             secrets::secrets_set,
             secrets::secrets_delete,
             secrets::secrets_get_all,
-            sessions::ai_list_sessions,
-            sessions::ai_get_session,
-            sessions::ai_save_session,
-            sessions::ai_delete_session,
-            sessions::recover_last_session,
+            session::sessions::ai_list_sessions,
+            session::sessions::ai_get_session,
+            session::sessions::ai_save_session,
+            session::sessions::ai_delete_session,
+            session::sessions::recover_last_session,
             proxy::get_proxy_port,
             proxy::get_proxy_logs,
             fs::fs_list_dir,
@@ -134,11 +104,11 @@ pub fn run() {
             project_intel::project_detect,
             project_intel::project_get_context,
             // Review System commands
-            review::review_text,
-            review::review_file,
+            analysis::review::review_text,
+            analysis::review::review_file,
             // Provider Stats commands
-            provider_stats::provider_get_stats,
-            provider_stats::provider_reset_stats,
+            routing::provider_stats::provider_get_stats,
+            routing::provider_stats::provider_reset_stats,
             // Agent Orchestration commands
             agent_orch::orch_get_agents,
             agent_orch::orch_add_agent,
@@ -161,9 +131,9 @@ pub fn run() {
             graph::graph_load_workspace,
             graph::graph_unload_workspace,
             // Cost Routing commands
-            cost_routing::cost_get_summary,
-            cost_routing::cost_set_budget,
-            cost_routing::cost_recommend,
+            session::cost_routing::cost_get_summary,
+            session::cost_routing::cost_set_budget,
+            session::cost_routing::cost_recommend,
             // Self-Healing commands
             self_heal::heal_get_status,
             self_heal::heal_restart_component,

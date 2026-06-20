@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { addToast } from "$lib/stores.svelte";
   import Terminal from "./Terminal.svelte";
@@ -203,6 +204,12 @@
   $effect(() => {
     if (profile && !isConnected && !isConnecting) {
       connect();
+    }
+  });
+
+  onDestroy(() => {
+    if (sessionId) {
+      invoke("ssh_disconnect", { sessionId }).catch(() => {});
     }
   });
 </script>

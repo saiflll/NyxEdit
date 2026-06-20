@@ -85,9 +85,13 @@ export async function autoRunReview(dir: string, enabled: boolean) {
 }
 
 // === HEALTH CHECK ===
-export async function checkSystemHealth() {
+export async function checkSystemHealth(onCrashDetected?: (components: string[]) => void) {
   try {
     const health = await invoke<any>("heal_check_startup");
+    if (health?.crashed && onCrashDetected) {
+      const crashed: string[] = health.crashed_components ?? [];
+      onCrashDetected(crashed);
+    }
     return health;
   } catch (e) {
     err("Health check failed:", e);
