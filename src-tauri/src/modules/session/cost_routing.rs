@@ -35,6 +35,48 @@ pub struct CostBudget {
     pub current_day_cost: f64,
 }
 
+/// Routing configuration for cost-aware model selection
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RoutingConfig {
+    pub enabled: bool,
+    pub preferred_provider: String,
+    pub max_fallback_attempts: u32,
+    pub auto_fallback: bool,
+    pub cost_optimization_level: String,
+}
+
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            preferred_provider: "auto".into(),
+            max_fallback_attempts: 3,
+            auto_fallback: true,
+            cost_optimization_level: "balanced".into(),
+        }
+    }
+}
+
+/// Aggregated cost analytics data for the frontend dashboard
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct CostAnalyticsData {
+    pub total_cost: f64,
+    pub total_calls: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub daily_cost: Vec<DailyCostPoint>,
+    pub by_model: Vec<serde_json::Value>,
+    pub budget: CostBudget,
+    pub routing_config: RoutingConfig,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct DailyCostPoint {
+    pub date: String,
+    pub cost: f64,
+    pub calls: u64,
+}
+
 impl Default for CostBudget {
     fn default() -> Self {
         Self {
@@ -50,8 +92,8 @@ impl Default for CostBudget {
 pub struct CostRouter {
     budget: Arc<Mutex<CostBudget>>,
     session_costs: Arc<Mutex<Vec<SessionCost>>>,
-    /// Cache: model_id -> avg cost per 1K tokens
     avg_costs: Arc<Mutex<HashMap<String, f64>>>,
+    routing_config: Arc<Mutex<RoutingConfig>>,
 }
 
 impl CostRouter {
@@ -60,6 +102,7 @@ impl CostRouter {
             budget: Arc::new(Mutex::new(CostBudget::default())),
             session_costs: Arc::new(Mutex::new(Vec::new())),
             avg_costs: Arc::new(Mutex::new(HashMap::new())),
+            routing_config: Arc::new(Mutex::new(RoutingConfig::default())),
         }
     }
 
@@ -228,6 +271,86 @@ impl CostRouter {
             })
         }).collect()
     }
+
+    // ─── New dashboard-related methods ─────────────────────────────────
+
+    /// Get the current routing configuration
+    pub fn get_routing_config(&self) -> RoutingConfig {
+        self.routing_config.lock().unwrap().clone()
+    }
+
+    /// Update routing configuration
+    pub fn update_routing_config(&self, config: RoutingConfig) {
+        *self.routing_config.lock().unwrap() = config;
+    }
+
+    /// Return aggregated cost analytics
+    pub fn get_analytics(&self) -> CostAnalyticsData {
+        let costs = self.session_costs.lock().unwrap();
+        let budget = self.budget.lock().unwrap();
+        let config = self.routing_config.lock().unwrap().clone();
+
+        let total_cost: f64 = costs.iter().map(|c| c.total_cost).sum();
+        let total_calls = costs.len() as u64;
+        let total_input: u64 = costs.iter().map(|c| c.total_input_tokens).sum();
+        let total_output: u64 = costs.iter().map(|c| c.total_output_tokens).sum();
+
+        let mut by_model: HashMap<String, (u64, f64)> = HashMap::new();
+        for sc in costs.iter() {
+            let entry = by_model.entry(sc.model_used.clone()).or_insert((0, 0.0));
+            entry.0 += 1;
+            entry.1 += sc.total_cost;
+        }
+        let by_model_json: Vec<serde_json::Value> = by_model.iter()
+            .map(|(model, (calls, cost))| {
+                let pct = if total_cost > 0.0 { cost / total_cost * 100.0 } else { 0.0 };
+                serde_json::json!({"model": model, "calls": calls, "cost": cost, "percent": pct})
+            })
+            .collect();
+
+        // Group sessions by date for daily cost points
+        let mut day_map: HashMap<String, (f64, u64)> = HashMap::new();
+        for sc in costs.iter() {
+            let date = if sc.session_id.len() >= 10 {
+                sc.session_id[..10].to_string()
+            } else {
+                "unknown".to_string()
+            };
+            let entry = day_map.entry(date).or_insert((0.0, 0));
+            entry.0 += sc.total_cost;
+            entry.1 += 1;
+        }
+        let mut daily_cost: Vec<DailyCostPoint> = day_map.into_iter()
+            .map(|(date, (cost, calls))| DailyCostPoint { date, cost, calls })
+            .collect();
+        daily_cost.sort_by(|a, b| a.date.cmp(&b.date));
+
+        CostAnalyticsData {
+            total_cost,
+            total_calls,
+            total_input_tokens: total_input,
+            total_output_tokens: total_output,
+            daily_cost,
+            by_model: by_model_json,
+            budget: budget.clone(),
+            routing_config: config,
+        }
+    }
+
+    /// Return recent cost events for the live cost stream
+    pub fn get_live_cost_events(&self) -> Vec<serde_json::Value> {
+        let costs = self.session_costs.lock().unwrap();
+        costs.iter().rev().take(50).map(|sc| {
+            serde_json::json!({
+                "session_id": sc.session_id,
+                "model": sc.model_used,
+                "provider": sc.provider_used,
+                "cost": sc.total_cost,
+                "input_tokens": sc.total_input_tokens,
+                "output_tokens": sc.total_output_tokens,
+            })
+        }).collect()
+    }
 }
 
 // ─── Tauri Commands ──────────────────────────────────────────────────
@@ -270,4 +393,30 @@ pub fn cost_get_breakdown(state: tauri::State<'_, CostRouter>) -> Result<serde_j
 #[tauri::command]
 pub fn cost_get_recommendation_log(state: tauri::State<'_, CostRouter>) -> Result<Vec<serde_json::Value>, String> {
     Ok(state.get_recommendation_log())
+}
+
+// ─── New Dashboard Commands ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_cost_analytics(state: tauri::State<'_, CostRouter>) -> Result<CostAnalyticsData, String> {
+    Ok(state.get_analytics())
+}
+
+#[tauri::command]
+pub fn get_live_cost_stream(state: tauri::State<'_, CostRouter>) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state.get_live_cost_events())
+}
+
+#[tauri::command]
+pub fn get_routing_config(state: tauri::State<'_, CostRouter>) -> Result<RoutingConfig, String> {
+    Ok(state.get_routing_config())
+}
+
+#[tauri::command]
+pub fn update_routing_config(
+    state: tauri::State<'_, CostRouter>,
+    config: RoutingConfig,
+) -> Result<(), String> {
+    state.update_routing_config(config);
+    Ok(())
 }

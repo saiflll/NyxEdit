@@ -18,7 +18,8 @@
   import { loadNyxConfig, saveNyxConfig, getActiveSettings, saveGlobalNyxConfig } from "$lib/nyxConfig";
   import { currentDir, addToast, agents as globalAgents, openFile } from "../stores.svelte";
   import OrchestratorPanel from "./OrchestratorPanel.svelte";
-  import SystemHealthCostPanel from "./SystemHealthCostPanel.svelte";
+  import HealthPanel from "./settings/HealthPanel.svelte";
+  import CostPanel from "./settings/CostPanel.svelte";
 
   let globalInstructions = $state("");
   let skillRead = $state(true);
@@ -1143,7 +1144,10 @@
   {:else if settingsTab === "orchestrator"}
     <OrchestratorPanel />
   {:else if settingsTab === "health_cost"}
-    <SystemHealthCostPanel />
+    <div class="hc-dashboard">
+      <HealthPanel />
+      <CostPanel />
+    </div>
   {:else if settingsTab === "about"}
     <div class="about-section">
       <div class="settings-header">
@@ -1572,4 +1576,18 @@
 
   /* Backdrop Settings styles */
   .bg-section { display:flex; flex-direction:column; gap:8px; padding:8px 0; max-width:480px; }
+
+  /* Health & Cost Dashboard */
+  .hc-dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    padding: 16px;
+    overflow-y: auto;
+    flex: 1;
+    align-content: start;
+  }
+  @media (max-width: 900px) {
+    .hc-dashboard { grid-template-columns: 1fr; }
+  }
 </style>

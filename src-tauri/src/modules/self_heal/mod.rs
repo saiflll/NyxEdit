@@ -24,12 +24,35 @@ pub struct ComponentInfo {
     pub last_error: Option<String>,
 }
 
+/// A single entry in the self-heal activity log
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HealLogEntry {
+    pub timestamp: String,
+    pub component: String,
+    pub event_type: String,
+    pub details: String,
+    pub recovery_time_ms: Option<u64>,
+}
+
+/// Aggregate health dashboard snapshot
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct HealthDashboardData {
+    pub global_status: String,
+    pub health_score: f64,
+    pub components: Vec<ComponentInfo>,
+    pub restart_counts: HashMap<String, u64>,
+    pub auto_repair_active: bool,
+    pub uptime_secs: u64,
+}
+
 /// SelfHealEngine — tracks component health and provides recovery.
 /// Every mutable operation is idempotent and thread-safe.
 pub struct SelfHealEngine {
     components: Arc<Mutex<HashMap<String, ComponentInfo>>>,
     started_at: Arc<Mutex<Instant>>,
     restart_count: Arc<Mutex<HashMap<String, u64>>>,
+    heal_log: Arc<Mutex<Vec<HealLogEntry>>>,
+    auto_repair: Arc<Mutex<bool>>,
 }
 
 impl SelfHealEngine {
@@ -52,6 +75,8 @@ impl SelfHealEngine {
             components: Arc::new(Mutex::new(comps)),
             started_at: Arc::new(Mutex::new(Instant::now())),
             restart_count: Arc::new(Mutex::new(HashMap::new())),
+            heal_log: Arc::new(Mutex::new(Vec::new())),
+            auto_repair: Arc::new(Mutex::new(true)),
         }
     }
 
@@ -142,6 +167,54 @@ impl SelfHealEngine {
             None => format!("{}: unknown component", name),
         }
     }
+
+    /// Push an entry to the heal activity log (keeps last 500)
+    pub fn push_heal_log(&self, entry: HealLogEntry) {
+        let mut log = self.heal_log.lock().unwrap();
+        log.push(entry);
+        if log.len() > 500 {
+            log.remove(0);
+        }
+    }
+
+    /// Return the most recent N heal log entries (default 100)
+    pub fn get_heal_history(&self, limit: usize) -> Vec<HealLogEntry> {
+        let log = self.heal_log.lock().unwrap();
+        let start = if log.len() > limit { log.len() - limit } else { 0 };
+        log[start..].to_vec()
+    }
+
+    /// Return a full dashboard snapshot
+    pub fn get_dashboard(&self) -> HealthDashboardData {
+        let comps = self.get_status();
+        let now = Instant::now();
+        let uptime = now.duration_since(*self.started_at.lock().unwrap()).as_secs();
+        let restart_counts = self.restart_count.lock().unwrap().clone();
+        // Include down + degraded counts in health score (0.0–1.0)
+        let down = comps.iter().filter(|c| matches!(c.status, HealthStatus::Down(_))).count();
+        let degraded = comps.iter().filter(|c| matches!(c.status, HealthStatus::Degraded(_))).count();
+        let total = comps.len().max(1);
+        let health_score = (total - down - (degraded / 2)) as f64 / total as f64;
+        let global_status = if down > 0 { "down" } else if degraded > 0 { "degraded" } else { "healthy" };
+        HealthDashboardData {
+            global_status: global_status.to_string(),
+            health_score,
+            components: comps,
+            restart_counts,
+            auto_repair_active: *self.auto_repair.lock().unwrap(),
+            uptime_secs: uptime,
+        }
+    }
+
+    /// Enable or disable auto-repair
+    pub fn set_auto_repair(&self, enabled: bool) {
+        *self.auto_repair.lock().unwrap() = enabled;
+    }
+
+    /// Get current auto-repair state
+    pub fn is_auto_repair_active(&self) -> bool {
+        *self.auto_repair.lock().unwrap()
+    }
 }
 
 /// Set a crash marker file so we know on next startup that we crashed.
@@ -207,4 +280,43 @@ pub fn heal_clear_crash_marker_cmd(app: tauri::AppHandle) -> Result<(), String> 
 pub fn heal_set_crash_marker_cmd(app: tauri::AppHandle) -> Result<(), String> {
     set_crash_marker(&app);
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_health_dashboard(state: tauri::State<'_, SelfHealEngine>) -> Result<HealthDashboardData, String> {
+    Ok(state.get_dashboard())
+}
+
+#[tauri::command]
+pub fn get_heal_history(
+    state: tauri::State<'_, SelfHealEngine>,
+    limit: Option<usize>,
+) -> Result<Vec<HealLogEntry>, String> {
+    Ok(state.get_heal_history(limit.unwrap_or(100)))
+}
+
+#[tauri::command]
+pub fn set_auto_repair(
+    state: tauri::State<'_, SelfHealEngine>,
+    enabled: bool,
+) -> Result<(), String> {
+    state.set_auto_repair(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn trigger_module_restart(
+    state: tauri::State<'_, SelfHealEngine>,
+    name: String,
+) -> Result<String, String> {
+    let result = state.heal_component(&name);
+    let entry = HealLogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        component: name,
+        event_type: "manual_restart".into(),
+        details: result.clone(),
+        recovery_time_ms: None,
+    };
+    state.push_heal_log(entry);
+    Ok(result)
 }
