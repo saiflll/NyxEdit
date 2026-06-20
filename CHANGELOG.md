@@ -5,7 +5,7 @@ Semua perubahan signifikan didokumentasikan di sini dengan format [SemVer](https
 ## [Unreleased]
 ### Ditambahkan
 - `docs/setup.md`, `docs/api.md`, `docs/troubleshooting.md` — dokumentasi development.
-- `docs/architecture/cmmo.md` — salinan `AGENTS.md` untuk organisasi lebih baik.
+- `docs/architecture/cmmo.md` — arsitektur CMMO lengkap.
 - `PULL_REQUEST_TEMPLATE.md` & `ISSUE_TEMPLATE/` (bug_report + feature_request).
 - `connect_timeout(5s)` pada reqwest client — connection refused gagal cepat tanpa nunggu 120s.
 - Deteksi connection error di fallback loop — langsung skip intra-provider fallback ketika service down.
@@ -33,7 +33,7 @@ Semua perubahan signifikan didokumentasikan di sini dengan format [SemVer](https
 - Mode debug terpusat via `.env` (kontrol `DEBUG=1/0`).
 
 ### Ditingkatkan
-- Dokumentasi CMMO Stage 5 (Knowledge Graph) di `AGENTS.md`.
+- Dokumentasi CMMO Stage 5 (Knowledge Graph) di `docs/architecture/cmmo.md`.
 - CI/CD lebih cepat dengan caching `node_modules`.
 
 ---
@@ -60,7 +60,7 @@ Semua perubahan signifikan didokumentasikan di sini dengan format [SemVer](https
   - Stage 1-10 (Basic Features) aktif.
   - UI/UX dengan SvelteKit.
   - Backend Rust (Tauri) untuk performa tinggi.
-- Dokumentasi awal di `README.md` dan `AGENTS.md`.
+- Dokumentasi awal di `README.md` dan `docs/architecture/cmmo.md`.
 - CI/CD untuk Linux, Windows, dan macOS.
 
 ---
