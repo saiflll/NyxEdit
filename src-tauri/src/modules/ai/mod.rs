@@ -1506,6 +1506,8 @@ pub struct AiToolCallEvent {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    #[serde(default)]
+    pub command: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -1622,10 +1624,19 @@ async fn run_react_loop(
                 state.write_agent_log(&agent.id, &agent.name,
                     &format!("TOOL_CALL id={} name={} arguments={}", tc.id, tc.name, tc.arguments.to_string()));
 
+                let cli_cmd = if tc.name.ends_with("_run") {
+                    let cli = tc.name.trim_end_matches("_run");
+                    let p = tc.arguments["prompt"].as_str().unwrap_or("");
+                    let preview = if p.len() > 80 { format!("{}...", &p[..80]) } else { p.to_string() };
+                    format!("{} -p \"{}\"", cli, preview)
+                } else {
+                    String::new()
+                };
                 let _ = app.emit("ai:tool_call", AiToolCallEvent {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
                     arguments: tc.arguments.clone(),
+                    command: cli_cmd,
                 });
             }
 
@@ -1936,6 +1947,8 @@ pub async fn ai_chat_stream(
                 
                 let cli_tool_name = format!("{}_run", agent_name);
                 let cwd = workspace_root.as_deref().unwrap_or(".");
+                let cmd_preview = if prompt.len() > 80 { format!("{}...", &prompt[..80]) } else { prompt.clone() };
+                let cli_command = format!("{} -p \"{}\"", agent_name, cmd_preview);
                 
                 let tool_call = ToolCall {
                     id: format!("ext-{}", uuid::Uuid::new_v4()),
@@ -1947,10 +1960,22 @@ pub async fn ai_chat_stream(
                     }),
                 };
                 
+                let _ = app.emit("ai:tool_call", AiToolCallEvent {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: tool_call.arguments.clone(),
+                    command: cli_command,
+                });
+                
                 let result = execute_cli_tool(&tool_call, cwd).await;
                 
                 match result {
                     Ok(output) => {
+                        let _ = app.emit("ai:tool_result", AiToolResultEvent {
+                            id: tool_call.id.clone(),
+                            name: tool_call.name.clone(),
+                            result: output.clone(),
+                        });
                         state.write_agent_log(&agent.id, &agent.name,
                             &format!("EXTERNAL AGENT {}: returned {} chars", agent_name, output.len()));
                         // Stage 7: Auto Code Review on generated content

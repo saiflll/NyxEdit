@@ -26,7 +26,8 @@
 
   let agents = $state<Agent[]>([]);
   let messages = $state<ChatMessage[]>([]);
-  let toolCalls = $state<Map<string, { name: string; args: string; result: string }>>(new Map());
+  let toolCalls = $state<Map<string, { name: string; args: string; result: string; command: string }>>(new Map());
+  let expandedToolCall = $state<string | null>(null);
   let input = $state("");
   let selectedMode = $state("auto");
   let selectedAgentId = $state("");
@@ -437,6 +438,7 @@
     currentSessionId = null;
     messages = [];
     toolCalls = new Map();
+    expandedToolCall = null;
   }
 
   function formatDate(iso: string): string {
@@ -452,6 +454,7 @@
     dagNodes = [];
     messages = [...messages, { role: "assistant", content: "" }];
     toolCalls = new Map();
+    expandedToolCall = null;
     streamingAgent = label;
 
     unlistenChunk = await listen<{delta: string}>("ai:chunk", (e) => {
@@ -563,7 +566,7 @@
 
     unlistenToolCall = await listen<AiToolCallEvent>("ai:tool_call", (e) => {
       const tc = e.payload;
-      toolCalls = new Map(toolCalls).set(tc.id, { name: tc.name, args: JSON.stringify(tc.arguments, null, 2), result: "..." });
+      toolCalls = new Map(toolCalls).set(tc.id, { name: tc.name, args: JSON.stringify(tc.arguments, null, 2), result: "...", command: tc.command ?? "" });
     });
 
     unlistenRequestPermission = await listen<{ id: string; command: string; cwd: string }>("ai:request_tool_permission", (e) => {
@@ -626,6 +629,7 @@
       isStreaming = false;
       streamingAgent = "";
       toolCalls = new Map();
+      expandedToolCall = null;
       cleanup();
       loadUsage();
       await saveCurrentSession();
@@ -643,6 +647,7 @@
       cleanup();
       messages = messages.slice(0, -1);
       toolCalls = new Map();
+      expandedToolCall = null;
       if (fallbackQueue.length > 0) {
         const next = fallbackQueue.shift()!;
         const nextLabel = selectedMode === "auto"
@@ -1040,13 +1045,39 @@
                 {#if toolCalls.size > 0}
                   <div class="tool-calls">
                     {#each Array.from(toolCalls.entries()) as [id, tc]}
-                      <div class="tool-call-item">
-                        <span class="tool-call-name">{tc.name}</span>
-                        <pre class="tool-call-args">{tc.args}</pre>
-                        {#if tc.result !== "..."}
-                          <pre class="tool-call-result">{tc.result}</pre>
-                        {:else}
-                          <span class="tool-call-pending">Executing...</span>
+                      {@const isCliTool = tc.name.endsWith("_run")}
+                      {@const expanded = expandedToolCall === id}
+                      <div class="tool-call-item" class:cli-tool={isCliTool} role="button" tabindex="0"
+                        onclick={() => expandedToolCall = expanded ? null : id}
+                        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedToolCall = expanded ? null : id; } }}>
+                        <div class="tool-call-header">
+                          <span class="tool-call-icon">{isCliTool ? '⚡' : '🔧'}</span>
+                          <span class="tool-call-name">{tc.name}</span>
+                          <span class="tool-call-status">
+                            {#if tc.result === "..."}
+                              <span class="tool-call-pending">Executing...</span>
+                            {:else}
+                              <span class="tool-call-done">Done</span>
+                            {/if}
+                          </span>
+                          <span class="tool-call-expand-icon">{expanded ? '▼' : '▶'}</span>
+                        </div>
+                        {#if expanded}
+                          <div class="tool-call-detail">
+                            {#if tc.command}
+                              <div class="tool-cmd-line">
+                                <span class="tool-cmd-label">Command:</span>
+                                <code class="tool-cmd-text">{tc.command}</code>
+                              </div>
+                            {/if}
+                            <pre class="tool-call-args">{tc.args}</pre>
+                            {#if tc.result !== "..."}
+                              <details class="tool-result-details">
+                                <summary>Result ({tc.result.length} chars)</summary>
+                                <pre class="tool-call-result">{tc.result}</pre>
+                              </details>
+                            {/if}
+                          </div>
                         {/if}
                       </div>
                     {/each}
@@ -1358,10 +1389,24 @@
   .dots span:nth-child(3) { animation-delay:0.4s; }
   @keyframes dotAnim { 0%,60%,100% { opacity:0; } 30% { opacity:1; } }
   .tool-calls { display:flex; flex-direction:column; gap:6px; }
-  .tool-call-item { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:6px; padding:6px 8px; font-size:var(--fs-10); }
-  .tool-call-name { font-weight:600; color:var(--accent-blue); display:block; margin-bottom:2px; }
+  .tool-call-item { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:6px; padding:6px 8px; font-size:var(--fs-10); cursor:pointer; transition:border-color 0.12s; }
+  .tool-call-item:hover { border-color:var(--accent-blue); }
+  .tool-call-item.cli-tool { border-left:3px solid var(--accent-yellow); }
+  .tool-call-header { display:flex; align-items:center; gap:6px; }
+  .tool-call-icon { font-size:12px; flex-shrink:0; }
+  .tool-call-name { font-weight:600; color:var(--accent-blue); flex:1; }
+  .tool-call-status { font-size:var(--fs-9); }
+  .tool-call-pending { color:var(--accent-yellow); }
+  .tool-call-done { color:var(--accent-green); }
+  .tool-call-expand-icon { font-size:10px; color:var(--text-muted); flex-shrink:0; }
+  .tool-call-detail { margin-top:6px; padding-top:6px; border-top:1px solid var(--border-subtle); }
+  .tool-cmd-line { margin-bottom:4px; font-size:var(--fs-9); }
+  .tool-cmd-label { color:var(--text-muted); margin-right:4px; }
+  .tool-cmd-text { color:var(--accent-yellow); font-family:monospace; word-break:break-all; }
   .tool-call-args { font-size:var(--fs-9); margin:2px 0; padding:4px; background:var(--bg-hover); border-radius:4px; max-height:100px; overflow:auto; white-space:pre-wrap; }
-  .tool-call-result { font-size:var(--fs-9); margin:2px 0; padding:4px; background:color-mix(in srgb, var(--accent-green) 6%, transparent); border-radius:4px; max-height:100px; overflow:auto; white-space:pre-wrap; }
+  .tool-call-result { font-size:var(--fs-9); margin:2px 0; padding:4px; background:color-mix(in srgb, var(--accent-green) 6%, transparent); border-radius:4px; max-height:150px; overflow:auto; white-space:pre-wrap; }
+  .tool-result-details { margin-top:4px; }
+  .tool-result-details summary { font-size:var(--fs-9); color:var(--text-muted); cursor:pointer; }
   .ai-messages::-webkit-scrollbar { width:4px; }
   .ai-messages::-webkit-scrollbar-thumb { background:var(--bg-hover); border-radius:2px; }
   .ai-usage-label { font-size:var(--fs-9); color:var(--text-muted); white-space:nowrap; flex-shrink:0; }

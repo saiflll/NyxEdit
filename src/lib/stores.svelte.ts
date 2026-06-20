@@ -30,6 +30,7 @@ export type AiToolCallEvent = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  command?: string;
 };
 
 export type AiToolResultEvent = {
