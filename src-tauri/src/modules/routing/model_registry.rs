@@ -116,7 +116,7 @@ impl ModelRegistry {
 
     /// Load from TOML file. Checks, in order:
     /// 1. Explicit path (if provided)
-    /// 2. `{app_data_dir}/contlib/models.toml` (auto-created on first run)
+    /// 2. \`{app_data_dir}/nyxedit/models.toml\` (auto-created on first run)
     /// 3. Compiled-in TOML (`models.toml`)
     /// 4. Hardcoded defaults (if all else fails)
     pub fn load<P: AsRef<Path>>(path: Option<P>) -> Self {
@@ -130,7 +130,7 @@ impl ModelRegistry {
         }
         // 2. Try app data dir external config
         if let Some(data_dir) = dirs::data_dir() {
-            let config_path = data_dir.join("contlib").join("models.toml");
+            let config_path = data_dir.join("nyxedit").join("models.toml");
             if config_path.exists() {
                 if let Ok(registry) = Self::load_from_toml(&config_path) {
                     return registry;

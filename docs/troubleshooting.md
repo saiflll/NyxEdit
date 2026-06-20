@@ -7,7 +7,7 @@
 **Solusi**:
 1. Pastikan Ollama berjalan: `ollama ps`
 2. Cek API key di Settings → Agents
-3. Buka `%APPDATA%/contlib/models.toml`, pastikan provider tercantum
+3. Buka `%APPDATA%/nyxedit/models.toml`, pastikan provider tercantum
 
 ## Build Error — Rust Compilation
 
@@ -38,7 +38,7 @@ rustup update stable
 **Penyebab**: Provider ada di Settings tapi tidak ada di `models.toml`.
 
 **Solusi**:
-1. Buka `%APPDATA%/contlib/models.toml`
+1. Buka `%APPDATA%/nyxedit/models.toml`
 2. Tambahkan model baru dengan format TOML:
 ```toml
 [[models]]

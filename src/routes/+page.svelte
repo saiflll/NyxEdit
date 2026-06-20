@@ -95,7 +95,7 @@
     activityViews = views;
     dragIconIndex = null;
     try {
-      localStorage.setItem("codlib-activity-order", JSON.stringify(views));
+      localStorage.setItem("nyxedit-activity-order", JSON.stringify(views));
     } catch {}
   }
   function handleIconDragOver(e: DragEvent) {
@@ -481,7 +481,7 @@
       .then(port => proxyPort = port)
       .catch(() => {});
     try {
-      const saved = localStorage.getItem("codlib-activity-order");
+      const saved = localStorage.getItem("nyxedit-activity-order");
       if (saved) {
         activityViews = JSON.parse(saved);
       }

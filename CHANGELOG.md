@@ -17,7 +17,7 @@ Format: [SemVer](https://semver.org/).
 
 ### Improved
 - Model registry expanded: 4 -> ~100 models, 15+ providers.
-- Model registry loads from %APPDATA%/contlib/models.toml (editable without rebuild).
+- Model registry loads from %APPDATA%/nyxedit/models.toml (editable without rebuild).
 
 ---
 

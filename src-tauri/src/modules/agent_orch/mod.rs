@@ -276,7 +276,7 @@ pub fn delegate_and_run(
 
         // Ensure API Key is resolved
         let secrets_state = app_clone.state::<super::secrets::SecretsState>();
-        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app_clone, &secrets_state, "codlib-ai", &sub_agent_config.id) {
+        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app_clone, &secrets_state, "nyxedit-ai", &sub_agent_config.id) {
             sub_agent_config.api_key = Some(real_key);
         }
 

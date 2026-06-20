@@ -1,6 +1,6 @@
 {
-  "name": "codlib",
-  "version": "0.1.0",
+  "name": "nyxedit",
+  "version": "1.2.0",
   "description": "AI-native IoT workshop with split terminal, multi-agent chat, file viewer, PlatformIO integration, and code editor",
   "type": "module",
   "scripts": {

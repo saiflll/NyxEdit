@@ -1,5 +1,5 @@
-# contlib Model Registry — 100 models from 15+ providers
-# Copy this file to %APPDATA%/contlib/models.toml to customize.
+# NyxEdit Model Registry — 100 models from 15+ providers
+# Copy this file to %APPDATA%/nyxedit/models.toml to customize.
 # Provider names here must match agent `provider` field in settings.
 
 # ===== OPENAI (11 models) =====

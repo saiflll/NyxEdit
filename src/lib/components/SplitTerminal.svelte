@@ -30,7 +30,7 @@
 
   // CWD tracking per terminal
   let cwds = $state<Record<string, string>>({
-    "term-1": "C:\\Users\\Lenovo\\Documents\\dev\\contlib",
+    "term-1": "C:\\Users\\Lenovo\\Documents\\dev\\NyxEdit",
   });
   let inputBuffers = $state<Record<string, string>>({});
 

@@ -212,7 +212,7 @@ function getInitialLangs(): Record<string, boolean> {
     xml: false
   };
   try {
-    const stored = localStorage.getItem("codlib-editor-langs");
+    const stored = localStorage.getItem("nyxedit-editor-langs");
     if (stored) {
       return { ...DEFAULT_LANGS, ...JSON.parse(stored) };
     }
@@ -225,7 +225,7 @@ export const editorLanguages = writable<Record<string, boolean>>(getInitialLangs
 export function saveEditorLangs(langs: Record<string, boolean>) {
   editorLanguages.set(langs);
   try {
-    localStorage.setItem("codlib-editor-langs", JSON.stringify(langs));
+    localStorage.setItem("nyxedit-editor-langs", JSON.stringify(langs));
   } catch (e) {
     console.error("Failed to save editor languages to localStorage:", e);
   }

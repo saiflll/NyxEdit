@@ -1,6 +1,6 @@
 # NyxEdit
 
-[![Build and Release](https://github.com/saiflll/Codlib/actions/workflows/build.yml/badge.svg)](https://github.com/saiflll/Codlib/actions/workflows/build.yml)
+[![Build and Release](https://github.com/saiflll/NyxEdit/actions/workflows/build.yml/badge.svg)](https://github.com/saiflll/NyxEdit/actions/workflows/build.yml)
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-blue.svg?logo=tauri)](https://tauri.app/)
 [![Svelte](https://img.shields.io/badge/SvelteKit-5.0-orange.svg?logo=svelte)](https://svelte.dev/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -26,7 +26,7 @@ Built with **Tauri 2 (Rust)** + **SvelteKit 5 (TypeScript)**.
 ## Technology Stack
 
 - **Frontend** — SvelteKit 5 (SPA, `adapter-static`), TypeScript, Vite 6, Vanilla CSS.
-- **Backend** — Tauri 2 (Rust), `codlib_lib` crate.
+- **Backend** — Tauri 2 (Rust), `nyxedit_lib` crate.
 - **Database** — SQLite (`sqlx` async).
 - **Allocator** — `mimalloc`.
 
@@ -44,8 +44,8 @@ Built with **Tauri 2 (Rust)** + **SvelteKit 5 (TypeScript)**.
 
 ```bash
 # Clone
-git clone https://github.com/saiflll/Codlib.git
-cd Codlib
+git clone https://github.com/saiflll/NyxEdit.git
+cd NyxEdit
 
 # Install deps
 npm ci

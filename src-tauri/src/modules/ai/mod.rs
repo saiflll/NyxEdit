@@ -70,7 +70,7 @@ struct PersonaList {
 fn load_personas() -> Vec<AgentPersona> {
     let cache = PERSONAS.get_or_init(|| {
         if let Some(data_dir) = dirs::data_dir() {
-            let config_path = data_dir.join("contlib").join("personas.toml");
+            let config_path = data_dir.join("nyxedit").join("personas.toml");
             if config_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&config_path) {
                     if let Ok(parsed) = toml::from_str::<PersonaList>(&content) {
@@ -525,7 +525,7 @@ pub async fn ai_chat(
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
 
     // Load actual API key dynamically from Keychain
-    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
+    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &agent_id) {
         agent.api_key = Some(real_key);
     } else if let Some(ref key) = agent.api_key {
         if key == "********" {
@@ -971,11 +971,11 @@ fn load_style_coding_config(workspace_root: &str) -> Option<StyleCodingConfig> {
     let mut paths = Vec::new();
     if !workspace_root.is_empty() {
         paths.push(std::path::Path::new(workspace_root).join(".nyx").join("style_coding.json"));
-        paths.push(std::path::Path::new(workspace_root).join("contlib").join(".nyx").join("style_coding.json"));
+        paths.push(std::path::Path::new(workspace_root).join("nyxedit").join(".nyx").join("style_coding.json"));
     }
     if let Ok(curr) = std::env::current_dir() {
         paths.push(curr.join(".nyx").join("style_coding.json"));
-        paths.push(curr.join("contlib").join(".nyx").join("style_coding.json"));
+        paths.push(curr.join("nyxedit").join(".nyx").join("style_coding.json"));
     }
 
     for path in paths {
@@ -1519,7 +1519,7 @@ pub fn save_personas(personas: Vec<AgentPersona>) -> Result<(), String> {
     let list = PersonaList { personas: personas.clone() };
     let toml_str = toml::to_string(&list).map_err(|e| e.to_string())?;
     let data_dir = dirs::data_dir().ok_or("No data directory")?;
-    let config_path = data_dir.join("contlib").join("personas.toml");
+    let config_path = data_dir.join("nyxedit").join("personas.toml");
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1842,7 +1842,7 @@ pub async fn ai_chat_stream(
                 if a.provider == "ollama" {
                     return true;
                 }
-                let key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &a.id)
+                let key = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &a.id)
                     .ok().flatten()
                     .or_else(|| a.api_key.clone());
                 key.map(|k| !k.is_empty() && k != "********").unwrap_or(false)
@@ -2193,7 +2193,7 @@ pub async fn ai_chat_stream(
             if a.provider == "ollama" {
                 return true;
             }
-            let key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &a.id)
+            let key = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &a.id)
                 .ok().flatten()
                 .or_else(|| a.api_key.clone());
             key.map(|k| !k.is_empty() && k != "********").unwrap_or(false)
@@ -2218,11 +2218,11 @@ pub async fn ai_chat_stream(
     loop {
         // Resolve API key: try agent.id first, then original agent_id as fallback
         // (auto-routing may swap agent.id to a provider-agent; we try both)
-        let resolved_key = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id)
+        let resolved_key = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &agent.id)
             .ok().flatten()
             .or_else(|| {
                 if agent.id != agent_id {
-                    crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id)
+                    crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &agent_id)
                         .ok().flatten()
                 } else {
                     None
@@ -2422,7 +2422,7 @@ pub async fn ai_chat_stream(
 
                         // Resolve API key for the candidate agent
                         if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(
-                            &app, &secrets_state, "codlib-ai", &next_agent.id)
+                            &app, &secrets_state, "nyxedit-ai", &next_agent.id)
                         {
                             next_agent.api_key = Some(real_key);
                         }
@@ -2555,7 +2555,7 @@ pub async fn ai_list_agents(
     state.ensure_loaded(&app);
     let mut list = state.list_agents();
     for agent in &mut list {
-        let has_key = if let Ok(Some(_)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent.id) {
+        let has_key = if let Ok(Some(_)) = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &agent.id) {
             true
         } else if let Some(ref key) = agent.api_key {
             !key.is_empty()
@@ -2584,14 +2584,14 @@ pub async fn ai_update_agent(
         if key == "********" {
             // Keep existing key in Keychain, do nothing
         } else if key.is_empty() {
-            let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "codlib-ai", &config.id);
+            let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "nyxedit-ai", &config.id);
             config.api_key = None;
         } else {
-            crate::modules::secrets::set_secret(&app, &secrets_state, "codlib-ai", &config.id, key)?;
+            crate::modules::secrets::set_secret(&app, &secrets_state, "nyxedit-ai", &config.id, key)?;
             config.api_key = Some("********".to_string());
         }
     } else {
-        let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "codlib-ai", &config.id);
+        let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "nyxedit-ai", &config.id);
     }
     state.update_agent(config)?;
     // Persist to disk
@@ -2608,7 +2608,7 @@ pub async fn ai_remove_agent(
     agent_id: String,
 ) -> Result<(), String> {
     state.ensure_loaded(&app);
-    let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "codlib-ai", &agent_id);
+    let _ = crate::modules::secrets::delete_secret(&app, &secrets_state, "nyxedit-ai", &agent_id);
     state.remove_agent(&agent_id)?;
     // Persist to disk
     let agents = state.agents.lock().unwrap();
@@ -2661,7 +2661,7 @@ pub async fn ai_sync_agent_models(
 ) -> Result<Vec<String>, String> {
     let mut agent = state.get_agent(&agent_id).ok_or("Agent not found")?;
 
-    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "codlib-ai", &agent_id) {
+    if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(&app, &secrets_state, "nyxedit-ai", &agent_id) {
         agent.api_key = Some(real_key);
     }
 
@@ -2862,7 +2862,7 @@ async fn run_chain(
         }
 
         // Resolve API key
-        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(app, secrets_state, "codlib-ai", &step_agent.id) {
+        if let Ok(Some(real_key)) = crate::modules::secrets::get_secret(app, secrets_state, "nyxedit-ai", &step_agent.id) {
             step_agent.api_key = Some(real_key);
         }
 
@@ -3020,7 +3020,7 @@ async fn run_dag(
 
                 let secret_key = {
                     let s = app.state::<crate::modules::secrets::SecretsState>();
-                    crate::modules::secrets::get_secret(&app, &*s, "codlib-ai", &step_agent.id)
+                    crate::modules::secrets::get_secret(&app, &*s, "nyxedit-ai", &step_agent.id)
                 };
                 if let Ok(Some(real_key)) = secret_key {
                     step_agent.api_key = Some(real_key);

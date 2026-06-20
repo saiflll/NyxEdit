@@ -1,12 +1,12 @@
 [package]
-name = "codlib"
-version = "0.1.0"
+name = "nyxedit"
+version = "1.2.0"
 description = "AI-native workshop with split terminal, multi-agent chat, notepad, file manager, and code editor"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "codlib_lib"
+name = "nyxedit_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

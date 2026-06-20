@@ -12,8 +12,8 @@
 
 ```bash
 # 1. Clone
-git clone https://github.com/saiflll/Codlib.git
-cd Codlib
+git clone https://github.com/saiflll/NyxEdit.git
+cd NyxEdit
 
 # 2. Install JS dependencies
 npm ci

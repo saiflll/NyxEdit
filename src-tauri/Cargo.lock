@@ -744,52 +744,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codlib"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "dirs",
- "env_logger",
- "futures",
- "glob",
- "keyring",
- "log",
- "mimalloc",
- "mongodb",
- "notify",
- "portable-pty",
- "regex",
- "reqwest 0.12.28",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "similar",
- "sqlx",
- "ssh-key",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-http",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tiktoken-rs",
- "tiny_http",
- "tokio",
- "toml 0.8.2",
- "tree-sitter",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "url",
- "uuid",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3474,6 +3428,52 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "nyxedit"
+version = "1.2.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dirs",
+ "env_logger",
+ "futures",
+ "glob",
+ "keyring",
+ "log",
+ "mimalloc",
+ "mongodb",
+ "notify",
+ "portable-pty",
+ "regex",
+ "reqwest 0.12.28",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "similar",
+ "sqlx",
+ "ssh-key",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-http",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tiktoken-rs",
+ "tiny_http",
+ "tokio",
+ "toml 0.8.2",
+ "tree-sitter",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "url",
+ "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

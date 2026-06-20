@@ -1,8 +1,8 @@
-# AGENTS.md — contlib (NyxEdit)
+# AGENTS.md — NyxEdit (NyxEdit)
 
 ## Stack
 - **Frontend**: SvelteKit 5 + TypeScript + Vite 6, static adapter (SPA mode, fallback `index.html`)
-- **Backend**: Tauri 2 (Rust), crate `codlib_lib`
+- **Backend**: Tauri 2 (Rust), crate `nyxedit_lib`
 - **Nama app**: NyxEdit (binary `NyxEdit.exe`)
 - **ID**: `com.lenovo.nyxedit`
 
@@ -73,7 +73,7 @@
 
 ## Provider Model Notes
 - **Model Registry** now has ~100 models from 15+ providers (OpenAI, Anthropic, Gemini, Mistral, DeepSeek, Groq, Together, Fireworks, Cohere, Alibaba, Perplexity, AI21, Cerebras, xAI, Nvidia, SambaNova, DeepInfra, OpenRouter, Ollama)
-- **External config**: `%APPDATA%/contlib/models.toml` is auto-created on first run. Edit it to customize models without rebuilding.
+- **External config**: `%APPDATA%/NyxEdit/models.toml` is auto-created on first run. Edit it to customize models without rebuilding.
 - **Auto Routing** prefers local Ollama models over cloud providers when available
 - **Vercel** uses `/` separator: `openai/gpt-4o-mini`, `meta/llama-3.1-8b`, etc.
 - **Cerebras direct API** has `gpt-oss-120b`, `zai-glm-4.7` (different from Vercel's `cerebras:llama3.1-8b`)
@@ -103,7 +103,7 @@
 **Kesimpulan**: Backend 100% aktif, frontend masih ada beberapa kontrol manual yang belum di-Svelte-in. Yang benar-benar aktif end-to-end secara otomatis di alur utama (main flow): Stage 1, 2, 3, 4, 6, 7, 8, 9 (auto-delegate), 11, 12, 13, dan 14. Lazy loading symbol graph (Stage 5) dan mimalloc allocator menjaga penggunaan RAM NyxEdit tetap rendah.
 
 ### Rust files added (Stage 1–14)
-- `src-tauri/models.toml` — compiled-in + external model definitions (100 models, 15+ providers, auto-copied to `{APPDATA}/contlib/models.toml` on first run)
+- `src-tauri/models.toml` — compiled-in + external model definitions (100 models, 15+ providers, auto-copied to `{APPDATA}/NyxEdit/models.toml` on first run)
 - `src-tauri/src/modules/fallback_manager.rs` — fallback queue builder
 - `src-tauri/src/modules/ripgrep.rs` — ripgrep search + in-memory scan cache
 - `src-tauri/src/modules/chain_engine.rs` — chain + DAG plan/execution structs (`DagNode`, `DagPlan`, `DagEdge`, `run_dag()`)

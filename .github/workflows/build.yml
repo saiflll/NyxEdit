@@ -51,9 +51,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libssl-dev
 
       - name: Install npm dependencies
         run: npm ci
@@ -94,7 +95,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "Release ${{ github.ref_name }}"
           body: "See the assets to download this version."
-          draft: true
+          draft: false
           prerelease: false
           files: release-assets/*
           generate_release_notes: true
