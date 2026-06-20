@@ -1,85 +1,90 @@
-# Changelog NyxEdit
+# Changelog
 
-Semua perubahan signifikan didokumentasikan di sini dengan format [SemVer](https://semver.org/).
+Format: [SemVer](https://semver.org/).
 
 ## [Unreleased]
-### Ditambahkan
-- `docs/setup.md`, `docs/api.md`, `docs/troubleshooting.md` — dokumentasi development.
-- `docs/architecture/cmmo.md` — arsitektur CMMO lengkap.
-- `PULL_REQUEST_TEMPLATE.md` & `ISSUE_TEMPLATE/` (bug_report + feature_request).
-- `connect_timeout(5s)` pada reqwest client — connection refused gagal cepat tanpa nunggu 120s.
-- Deteksi connection error di fallback loop — langsung skip intra-provider fallback ketika service down.
 
-### Diperbaiki
-- Fallback loop tidak lagi stuck mencoba 22 model Ollama berturut-turut saat Ollama mati — langsung loncat ke provider lain.
-- `.gitignore` diperbarui untuk mengabaikan cache (`.nyx/`, `.notepad_temp/`).
+### Added
+- docs/setup.md, docs/api.md, docs/troubleshooting.md — development docs.
+- docs/architecture/cmmo.md — full CMMO architecture.
+- PULL_REQUEST_TEMPLATE.md & ISSUE_TEMPLATE/ (bug_report + feature_request).
+- connect_timeout(5s) on reqwest client — connection refused fails fast.
+- Connection error detection in fallback loop — skip intra-provider on service down.
 
-### Ditingkatkan
-- Model registry diperluas dari 4 model → ~100 model dari 15+ provider.
-- Model registry sekarang load dari `%APPDATA%/contlib/models.toml` (bisa diedit tanpa rebuild).
+### Fixed
+- Fallback loop no longer stuck trying 22 Ollama models when Ollama is down.
+- .gitignore updated (cache dirs: .nyx/, .notepad_temp/).
+
+### Improved
+- Model registry expanded: 4 -> ~100 models, 15+ providers.
+- Model registry loads from %APPDATA%/contlib/models.toml (editable without rebuild).
 
 ---
 
 ## [1.2.0] - 2024-05-20
-### Ditambahkan
-- Fitur multi-folder workspace (kerja dengan beberapa folder sekaligus).
-- Integrasi PlatformIO untuk IoT development.
-- Clipboard multimodal (teks, gambar, file).
-- Stage 14 (Smart Cost Routing) aktif otomatis.
 
-### Diperbaiki
-- Kinerja terminal split (masalah lag pada Windows).
-- Bug autentikasi API (Vercel/Gemini).
-- Mode debug terpusat via `.env` (kontrol `DEBUG=1/0`).
+### Added
+- Multi-folder workspace support.
+- PlatformIO integration for IoT development.
+- Multimodal clipboard (text, images, files).
+- Stage 14 (Smart Cost Routing) auto-enabled.
 
-### Ditingkatkan
-- Dokumentasi CMMO Stage 5 (Knowledge Graph) di `docs/architecture/cmmo.md`.
-- CI/CD lebih cepat dengan caching `node_modules`.
+### Fixed
+- Terminal split performance (Windows lag).
+- API auth bugs (Vercel/Gemini).
+- Centralized debug mode via .env (`DEBUG=1/0`).
+
+### Improved
+- CMMO Stage 5 (Knowledge Graph) docs.
+- Faster CI/CD with node_modules caching.
 
 ---
 
 ## [1.1.0] - 2024-04-15
-### Ditambahkan
-- Stage 13 (Multi-Tool Workspace) aktif otomatis.
-- Integrasi GitHub Actions untuk deployment otomatis.
-- Mode debug terpusat via environment variable.
 
-### Diperbaiki
-- Bug rendering markdown di terminal split.
-- Masalah koneksi ke server backend.
+### Added
+- Stage 13 (Multi-Tool Workspace) auto-enabled.
+- GitHub Actions for automated deployment.
+- Centralized debug mode via env var.
 
-### Ditingkatkan
-- Dokumentasi API untuk Stage 12 (Smart Search).
-- Struktur proyek dimodularisasi lebih baik.
+### Fixed
+- Markdown rendering in terminal split.
+- Backend connection issues.
+
+### Improved
+- API docs for Stage 12 (Smart Search).
+- Modularized project structure.
 
 ---
 
 ## [1.0.0] - 2024-03-01
-### Ditambahkan
-- Aplikasi desktop pertama dengan fitur dasar:
-  - Stage 1-10 (Basic Features) aktif.
-  - UI/UX dengan SvelteKit.
-  - Backend Rust (Tauri) untuk performa tinggi.
-- Dokumentasi awal di `README.md` dan `docs/architecture/cmmo.md`.
-- CI/CD untuk Linux, Windows, dan macOS.
+
+### Added
+- Desktop app with core features:
+  - Stage 1-10 (Basic Features) active.
+  - SvelteKit UI.
+  - Rust/Tauri backend.
+- Initial docs in README.md and docs/architecture/cmmo.md.
+- CI/CD for Linux, Windows, macOS.
 
 ---
 
-### Format
-Setiap rilis memiliki format:
-```markdown
-## [versi] - tanggal
-### Ditambahkan
-- Fitur atau perubahan yang ditambahkan.
+### Format Reference
 
-### Diperbaiki
-- Bug yang diperbaiki.
+```
+## [version] - date
+### Added
+- Features or additions.
 
-### Ditingkatkan
-- Performa, dokumentasi, atau pengalaman pengguna yang ditingkatkan.
+### Fixed
+- Bug fixes.
+
+### Improved
+- Performance, docs, or UX improvements.
 ```
 
 ---
 
-### Panduan Kontribusi
-Jika Anda ingin berkontribusi, lihat [CONTRIBUTING.md](.github/CONTRIBUTING.md) untuk detailnya.
+### Contributing
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md).
